@@ -9,7 +9,8 @@ const manifest = JSON.parse(fs.readFileSync(path.join(import.meta.dirname, '..',
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 async function api(p, opts) {
-  const res = await fetch(BASE + p, opts);
+  // POSTs carry X-Demo: the server refuses writes without it (CSRF guard).
+  const res = await fetch(BASE + p, opts?.method === 'POST' ? { ...opts, headers: { ...opts.headers, 'X-Demo': '1' } } : opts);
   const body = await res.json().catch(() => null);
   if (!res.ok) throw new Error(`${opts?.method ?? 'GET'} ${p} → ${res.status} ${body?.error ?? ''}`);
   return body;

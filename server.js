@@ -1,16 +1,30 @@
 import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
-import { PORT, PATHS, TOL, MAX_UPLOAD_BYTES } from './src/config.js';
-import { openDb, getRun, getRunFile, listRuns, getMaster, getLedger, resetRuns } from './src/db.js';
-import { sniff } from './src/extract.js';
-import { normalizePO } from './src/rules.js';
-import { startRun, subscribe, reviewRun, retryRun, summarize } from './src/pipeline.js';
+import { fileURLToPath } from 'node:url';
+import { PORT, PATHS, TOL, MAX_UPLOAD_BYTES, LIMITS } from './src/config.js';
+import { openDb, getRun, getRunFile, listRuns, getMaster, getLedger, getCachedExtraction } from './src/db.js';
+import { sniff, sha256, readQueue } from './src/extract.js';
+import * as rules from './src/rules.js';
+import { startRun, subscribe, reviewRun, retryRun, summarize, resetAll, recoverInterrupted } from './src/pipeline.js';
 import { LABELS } from './src/decide.js';
+
+const { normalizePO } = rules;
+const isCreditNote = (ex) => (rules.isCreditNote ? rules.isCreditNote(ex) : ex?.document_type === 'credit_note');
 
 const TYPES = {
   '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8',
-  '.svg': 'image/svg+xml', '.png': 'image/png', '.pdf': 'application/pdf', '.json': 'application/json; charset=utf-8',
+  '.svg': 'image/svg+xml', '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.pdf': 'application/pdf',
+  '.json': 'application/json; charset=utf-8', '.ico': 'image/x-icon',
+};
+
+// On every response. The PDF preview is an <iframe> of /api/runs/:id/file, hence frame-src/frame-ancestors 'self'.
+const SECURITY_HEADERS = {
+  'X-Content-Type-Options': 'nosniff',
+  'Referrer-Policy': 'no-referrer',
+  'Content-Security-Policy': "default-src 'self'; script-src 'self'; style-src 'self' https://fonts.googleapis.com 'unsafe-inline'; "
+    + "font-src https://fonts.gstatic.com; img-src 'self' data: blob:; frame-src 'self'; object-src 'none'; base-uri 'none'; "
+    + "frame-ancestors 'self'; connect-src 'self'",
 };
 
 function send(res, status, body, type = 'text/plain; charset=utf-8') {
@@ -24,6 +38,7 @@ const httpError = (status, message) => Object.assign(new Error(message), { statu
 function serveFile(res, dir, rel) {
   let decoded;
   try { decoded = decodeURIComponent(rel); } catch { return send(res, 400, 'bad path'); }
+  if (decoded.includes('\0')) return send(res, 400, 'bad path');
   const file = path.resolve(dir, '.' + path.sep + decoded);
   if (file !== dir && !file.startsWith(dir + path.sep)) return send(res, 404, 'not found');
   fs.readFile(file, (err, buf) => {
@@ -48,46 +63,98 @@ function readBody(req, max) {
   });
 }
 
+// ---------- public-demo protection ----------
+// shortcut: X-Forwarded-For's first hop is client-supplied, so a determined caller can rotate it; the daily Gemini cap is the hard limit.
+const clientIp = (req) => String(req.headers['x-forwarded-for'] ?? '').split(',')[0].trim() || req.socket.remoteAddress || '?';
+
+/** Sliding-window limiter: allow(key) is false once `max()` hits happened within `windowMs`. */
+function limiter(max, windowMs) {
+  const hits = new Map();
+  return (key) => {
+    const now = Date.now();
+    const recent = (hits.get(key) ?? []).filter((t) => now - t < windowMs);
+    const ok = recent.length < max();
+    if (ok) recent.push(now);
+    hits.set(key, recent);
+    if (hits.size > 10_000) for (const [k, ts] of hits) if (!ts.length || now - ts.at(-1) >= windowMs) hits.delete(k);
+    return ok;
+  };
+}
+const runLimit = limiter(() => LIMITS.runsPerIpPerHour, 3600_000);
+const resetLimit = limiter(() => 1, LIMITS.resetEverySec * 1000);
+const rateLimit = (req) => {
+  if (!runLimit(clientIp(req))) throw httpError(429, `Too many invoices from your address: the demo allows ${LIMITS.runsPerIpPerHour} an hour. Try again later.`);
+};
+
+// Runs that need a fresh Gemini read (new file, ?fresh=1, retry), per UTC day. In memory: a restart resets it.
+const gemini = { day: null, used: 0 };
+const GEMINI_CAP_MSG = 'Daily AI reading limit reached for this demo — samples still work from cache';
+function checkGemini() {
+  const day = new Date().toISOString().slice(0, 10);
+  if (gemini.day !== day) Object.assign(gemini, { day, used: 0 });
+  if (gemini.used >= LIMITS.geminiDailyCap) throw httpError(429, GEMINI_CAP_MSG);
+  if (readQueue().waiting >= LIMITS.maxQueuedReads) throw httpError(503, 'The demo is busy reading other invoices. Try again in a minute.');
+}
+
+// ---------- handlers ----------
 const manifest = () => JSON.parse(fs.readFileSync(path.join(PATHS.samples, 'manifest.json'), 'utf8'));
 const runOr404 = (id) => getRun(id) ?? (() => { throw httpError(404, 'Run not found'); })();
-// shortcut: full runs are loaded one by one for lists and stats; fine for demo volumes, move to SQL aggregates past a few thousand runs.
+// shortcut: full runs are loaded one by one for lists and stats; fine for demo volumes (runs are capped at LIMITS.maxRuns).
 const allRuns = () => listRuns().map((r) => getRun(r.id));
 
-async function createRun(req, res, m, url) {
+async function createRun(req, res, m, url, opts) {
+  rateLimit(req);
   const fresh = url.searchParams.get('fresh') === '1';
   const sample = url.searchParams.get('sample');
+  let run;
   if (sample) {
     if (!manifest().some((s) => s.file === sample)) throw httpError(404, `Unknown sample: ${sample}`);
-    const bytes = fs.readFileSync(path.join(PATHS.samples, sample));
     req.resume();
-    return json(res, 202, { id: startRun({ bytes, mime: 'application/pdf', filename: sample, source: 'sample', fresh }) });
+    const bytes = fs.readFileSync(path.join(PATHS.samples, sample));
+    run = { bytes, mime: sniff(bytes).mime, filename: sample, source: 'sample' };
+  } else {
+    const bytes = await readBody(req, MAX_UPLOAD_BYTES);
+    if (!bytes.length) throw httpError(400, 'Send the file as the request body, or use ?sample=<file>');
+    const { mime } = sniff(bytes);
+    if (!['application/pdf', 'image/png', 'image/jpeg'].includes(mime)) throw httpError(415, "This file isn't a PDF or image");
+    let filename = String(req.headers['x-filename'] || 'upload');
+    try { filename = decodeURIComponent(filename); } catch {}
+    run = { bytes, mime, filename: path.basename(filename).slice(0, 200) || 'upload', source: 'upload' };
   }
-  const bytes = await readBody(req, MAX_UPLOAD_BYTES);
-  if (!bytes.length) throw httpError(400, 'Send the file as the request body, or use ?sample=<file>');
-  const { mime } = sniff(bytes);
-  if (!['application/pdf', 'image/png', 'image/jpeg'].includes(mime)) throw httpError(415, "This file isn't a PDF or image");
-  let filename = String(req.headers['x-filename'] || 'upload');
-  try { filename = decodeURIComponent(filename); } catch {}
-  json(res, 202, { id: startRun({ bytes, mime, filename: path.basename(filename).slice(0, 200), source: 'upload', fresh }) });
+  const needsGemini = fresh || !getCachedExtraction(sha256(run.bytes));
+  if (needsGemini) checkGemini();
+  const id = startRun({ ...run, fresh, ...(opts.extractor && { extractor: opts.extractor }) });
+  if (needsGemini) gemini.used++;
+  json(res, 202, { id });
 }
 
 function events(req, res, m) {
   const run = runOr404(m[1]);
   res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no', Connection: 'keep-alive' });
+  if (req.method === 'HEAD') return res.end();
   const ev = (type, data) => res.write(`event: ${type}\ndata: ${JSON.stringify(data)}\n\n`);
   ev('snapshot', run);
   if (run.status !== 'running') { ev('done', run); return res.end(); }
   const hb = setInterval(() => res.write(': heartbeat\n\n'), 15_000);
-  const unsub = subscribe(run.id, (type, data) => { ev(type, data); if (type === 'done') { cleanup(); res.end(); } });
+  // `reset`: the run was deleted by POST /api/reset; the stream closes after it.
+  const unsub = subscribe(run.id, (type, data) => { ev(type, data); if (type === 'done' || type === 'reset') { cleanup(); res.end(); } });
   function cleanup() { clearInterval(hb); unsub(); }
   req.on('close', cleanup);
+}
+
+/** RFC 6266: an ASCII `filename` for old clients plus the exact UTF-8 name in `filename*`. */
+function contentDisposition(name) {
+  const ascii = name.normalize('NFKD').replace(/[\u0300-\u036f]/g, '').replace(/[^\x20-\x7e]|["\\]/g, '_');
+  const utf8 = encodeURIComponent(name).replace(/['()*]/g, (c) => '%' + c.charCodeAt(0).toString(16).toUpperCase());
+  return `inline; filename="${ascii}"; filename*=UTF-8''${utf8}`;
 }
 
 function sendRunFile(req, res, m) {
   const f = getRunFile(m[1]);
   if (!f) throw httpError(404, 'Run not found');
-  const name = String(f.filename || 'invoice').replace(/["\\\r\n]/g, '_');
-  res.writeHead(200, { 'Content-Type': f.mime || 'application/octet-stream', 'Content-Disposition': `inline; filename="${name}"`, 'Content-Length': f.bytes.length });
+  if (!f.bytes) throw httpError(410, 'This file is no longer stored (only the newest runs keep their files).');
+  const name = String(f.filename || 'invoice').replace(/[\r\n]/g, '_');
+  res.writeHead(200, { 'Content-Type': f.mime || 'application/octet-stream', 'Content-Disposition': contentDisposition(name), 'Content-Length': f.bytes.length });
   res.end(Buffer.from(f.bytes));
 }
 
@@ -97,12 +164,23 @@ async function review(req, res, m) {
     throw e.status ? e : httpError(400, 'Body must be JSON: {"action":"approve"|"reject","reviewer":"...","note":"...","callbackVerified":true|false}');
   }
   if (!body || typeof body !== 'object' || Array.isArray(body)) throw httpError(400, 'Body must be a JSON object.');
-  json(res, 200, reviewRun(m[1], body));
+  json(res, 200, await reviewRun(m[1], body));
 }
 
-function retry(req, res, m) {
+function retry(req, res, m, url, opts) {
   req.resume();
-  json(res, 202, { id: retryRun(m[1]) });
+  rateLimit(req);
+  // A retry always reads fresh, so it counts against the daily Gemini cap once it is known to be allowed.
+  const id = retryRun(m[1], { ...(opts.extractor && { extractor: opts.extractor }), beforeStart: checkGemini });
+  gemini.used++;
+  json(res, 202, { id });
+}
+
+function reset(req, res) {
+  req.resume();
+  if (!resetLimit(clientIp(req))) throw httpError(429, `The demo can be reset once every ${LIMITS.resetEverySec} seconds. Try again shortly.`);
+  resetAll();
+  json(res, 200, { ok: true });
 }
 
 /** Manifest plus, per sample, the latest run of that file still in the DB. */
@@ -121,7 +199,7 @@ const median = (xs) => {
 };
 
 function stats(req, res) {
-  const runs = allRuns();
+  const runs = allRuns().filter((r) => !r.superseded_by); // a retried run is replaced by its retry
   const done = runs.filter((r) => r.status === 'done');
   const byDecision = { APPROVE: 0, REVIEW: 0, REJECT: 0 }; // what the system decided
   for (const r of done) if (r.decision in byDecision) byDecision[r.decision]++;
@@ -134,12 +212,13 @@ function stats(req, res) {
   for (const r of done) {
     if (r.final?.decision !== 'APPROVE') continue;
     const cur = r.currency || 'USD';
-    valueApproved[cur] = Math.round(((valueApproved[cur] ?? 0) + (r.total ?? 0)) * 100) / 100;
+    const amt = isCreditNote(r.extraction) ? -Math.abs(r.total ?? 0) : (r.total ?? 0);
+    valueApproved[cur] = Math.round(((valueApproved[cur] ?? 0) + amt) * 100) / 100;
   }
-  // Read time: the fresh Gemini latency, or for a cached run the latency of the reading it reused.
+  // Read time: the fresh Gemini latency, or for a cached run the latency of the reading it reused (null if unknown, then ignored).
   const readMs = done.map((r) => {
     const d = r.stages?.find((s) => s.key === 'extract')?.data;
-    return d ? (d.cached ? d.originalLatencyMs : d.latencyMs) : null;
+    return d ? (d.cached ? d.originalLatencyMs ?? null : d.latencyMs) : null;
   });
   // Count invoices, not reasons: two QTY lines on one invoice count once.
   const counts = new Map();
@@ -188,7 +267,7 @@ function data(req, res) {
   });
 }
 
-// Route table: [method, regex, handler(req, res, match, url)]. First match wins.
+// Route table: [method, regex, handler(req, res, match, url, opts)]. First match wins. GET routes also answer HEAD.
 const routes = [
   ['GET', /^\/healthz$/, (req, res) => send(res, 200, 'ok')],
   ['GET', /^\/api\/samples$/, samples],
@@ -205,27 +284,71 @@ const routes = [
   ['POST', /^\/api\/runs\/([^/]+)\/retry$/, retry],
   ['GET', /^\/api\/stats$/, stats],
   ['GET', /^\/api\/data$/, data],
-  ['POST', /^\/api\/reset$/, (req, res) => { resetRuns(); json(res, 200, { ok: true }); }],
+  ['POST', /^\/api\/reset$/, reset],
   ['*', /^\/api(\/|$)/, (req, res) => json(res, 404, { error: 'Not found' })],
   ['GET', /^\/samples\/(.+)$/, (req, res, m) => serveFile(res, PATHS.samples, m[1])],
   ['GET', /^\/(.*)$/, (req, res, m) => serveFile(res, PATHS.public, m[1] || 'index.html')],
 ];
 
-openDb();
+/** Methods the first matching routes accept, for OPTIONS. */
+function allowed(pathname) {
+  const methods = new Set();
+  for (const [method, re] of routes) {
+    if (!re.test(pathname)) continue;
+    if (method === '*') break;
+    methods.add(method);
+  }
+  if (methods.has('GET')) methods.add('HEAD');
+  return [...methods, 'OPTIONS'].join(', ');
+}
 
-http.createServer((req, res) => {
-  const url = new URL(req.url, 'http://x');
+function handle(req, res, opts) {
+  for (const [k, v] of Object.entries(SECURITY_HEADERS)) res.setHeader(k, v);
+  let url;
+  try { url = new URL(req.url, 'http://x'); } catch { req.resume(); return send(res, 400, 'bad request'); }
+  const isApi = url.pathname.startsWith('/api/');
+  const fail = (e) => {
+    if (!e.status || e.status >= 500) console.error(e);
+    if (res.headersSent) return res.end();
+    const status = e.status ?? 500;
+    if (isApi) json(res, status, { error: e.status ? e.message : 'Internal error' });
+    else send(res, status, e.status ? e.message : 'internal error');
+  };
+  if (req.method === 'OPTIONS') { req.resume(); res.writeHead(204, { Allow: allowed(url.pathname) }); return res.end(); }
+  // CSRF guard for the public demo: a cross-site form or no-cors fetch cannot set a custom header.
+  if (req.method === 'POST' && req.headers['x-demo'] !== '1') { req.resume(); return json(res, 403, { error: 'Missing X-Demo header' }); }
   for (const [method, re, handler] of routes) {
     const m = url.pathname.match(re);
-    if (m && (req.method === method || method === '*')) {
-      return Promise.resolve().then(() => handler(req, res, m, url)).catch((e) => {
-        if (!e.status || e.status >= 500) console.error(e);
-        if (res.headersSent) return res.end();
-        const status = e.status ?? 500;
-        if (url.pathname.startsWith('/api/')) json(res, status, { error: e.status ? e.message : 'Internal error' });
-        else send(res, status, 'internal error');
-      });
+    if (m && (req.method === method || method === '*' || (req.method === 'HEAD' && method === 'GET'))) {
+      return Promise.resolve().then(() => handler(req, res, m, url, opts)).catch(fail);
     }
   }
+  req.resume();
   send(res, 404, 'not found');
-}).listen(PORT, () => console.log(`listening on :${PORT}`));
+}
+
+/**
+ * The app server, not yet listening. Opens the DB and marks runs cut off by a restart as errors.
+ * `extractor` replaces Gemini (tests).
+ */
+export function createServer(opts = {}) {
+  openDb();
+  recoverInterrupted();
+  const server = http.createServer({ maxHeaderSize: 16 * 1024 }, (req, res) => handle(req, res, opts));
+  Object.assign(server, { requestTimeout: 30_000, headersTimeout: 15_000, maxConnections: 200 });
+  // Malformed requests, oversized headers, timeouts: answer with a status instead of resetting the connection.
+  server.on('clientError', (err, socket) => {
+    if (err.code === 'ECONNRESET' || !socket.writable) return socket.destroy();
+    const status = err.code === 'HPE_HEADER_OVERFLOW' ? '431 Request Header Fields Too Large'
+      : err.code === 'ERR_HTTP_REQUEST_TIMEOUT' ? '408 Request Timeout' : '400 Bad Request';
+    socket.end(`HTTP/1.1 ${status}\r\nConnection: close\r\nContent-Length: 0\r\n\r\n`);
+  });
+  return server;
+}
+
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  // Last resort: log and keep serving. Request errors are already answered by the route handler's catch.
+  process.on('uncaughtException', (e) => console.error('uncaught exception:', e));
+  process.on('unhandledRejection', (e) => console.error('unhandled rejection:', e));
+  createServer().listen(PORT, () => console.log(`listening on :${PORT}`));
+}

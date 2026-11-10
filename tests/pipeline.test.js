@@ -10,7 +10,7 @@ const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'pipeline-test-'));
 process.env.DB_PATH = path.join(tmp, 'app.db');
 process.env.APP_TODAY ??= '2026-11-10';
 process.env.PIPELINE_DELAY = '0';
-const { startRun, subscribe, reviewRun, retryRun, summarize } = await import('../src/pipeline.js');
+const { startRun, subscribe, reviewRun, retryRun, summarize, resetAll, recoverInterrupted } = await import('../src/pipeline.js');
 const db = await import('../src/db.js');
 const { sha256 } = await import('../src/extract.js');
 
@@ -145,13 +145,13 @@ test(`the ${manifest.length} samples in manifest order`, async (t) => {
     assert.deepEqual(r4.lines.map((l) => [l.po_line_no, l.qty]), [[1, 6], [2, 6]]);
   });
 
-  await t.test('review: validation, then approving the held split invoice schedules payment, once', () => {
+  await t.test('review: validation, then approving the held split invoice schedules payment, once', async () => {
     const id = runs['05_northstar_split_2of2.pdf'].id;
-    assert.throws(() => reviewRun(id, { action: 'approve', note: 'Docks arrived' }), (e) => e.status === 400 && /name/.test(e.message));
-    assert.throws(() => reviewRun(id, { action: 'approve', reviewer: 'S', note: 'Docks arrived' }), (e) => e.status === 400);
-    assert.throws(() => reviewRun(id, { action: 'approve', reviewer: 'Sam', note: ' ok ' }), (e) => e.status === 400 && /note/.test(e.message));
-    assert.throws(() => reviewRun(id, { action: 'maybe', reviewer: 'Sam', note: 'Docks arrived' }), (e) => e.status === 400);
-    const updated = review(id, { action: 'approve', note: '  Receiving confirmed the docks arrived ' });
+    await assert.rejects(reviewRun(id, { action: 'approve', note: 'Docks arrived' }), (e) => e.status === 400 && /name/.test(e.message));
+    await assert.rejects(reviewRun(id, { action: 'approve', reviewer: 'S', note: 'Docks arrived' }), (e) => e.status === 400);
+    await assert.rejects(reviewRun(id, { action: 'approve', reviewer: 'Sam', note: ' ok ' }), (e) => e.status === 400 && /note/.test(e.message));
+    await assert.rejects(reviewRun(id, { action: 'maybe', reviewer: 'Sam', note: 'Docks arrived' }), (e) => e.status === 400);
+    const updated = await review(id, { action: 'approve', note: '  Receiving confirmed the docks arrived ' });
     assert.deepEqual({ ...updated.review, at: null }, { action: 'approve', reviewer: 'Sam Lee', note: 'Receiving confirmed the docks arrived', callbackVerified: false, at: null });
     assert.equal(updated.final.decision, 'APPROVE');
     assert.equal(updated.final.by, 'reviewer');
@@ -160,23 +160,23 @@ test(`the ${manifest.length} samples in manifest order`, async (t) => {
     assert.equal(db.getLedger().find((l) => l.run_id === id).status, 'approved');
     assert.equal(summarize(updated).reviewer, 'Sam Lee');
     assert.equal(summarize(updated).final_decision, 'APPROVE');
-    assert.throws(() => review(id, { action: 'reject' }), (e) => e.status === 409);
-    assert.throws(() => review(runs['01_acme_happy.pdf'].id, { action: 'approve' }), (e) => e.status === 409);
-    assert.throws(() => review('r_nope', { action: 'approve' }), (e) => e.status === 404);
+    await assert.rejects(review(id, { action: 'reject' }), (e) => e.status === 409);
+    await assert.rejects(review(runs['01_acme_happy.pdf'].id, { action: 'approve' }), (e) => e.status === 409);
+    await assert.rejects(review('r_nope', { action: 'approve' }), (e) => e.status === 404);
   });
 
-  await t.test('review: a bank change needs a verified call-back before approval; reject does not', () => {
+  await t.test('review: a bank change needs a verified call-back before approval; reject does not', async () => {
     const id = runs['07_kestrel_bank_change.pdf'].id;
-    assert.throws(() => review(id, { action: 'approve' }), (e) => e.status === 400 && /call/i.test(e.message));
-    assert.throws(() => review(id, { action: 'approve', callbackVerified: 'yes' }), (e) => e.status === 400);
-    const ok = review(id, { action: 'approve', callbackVerified: true, note: 'Called (510) 555-0199, change confirmed' });
+    await assert.rejects(review(id, { action: 'approve' }), (e) => e.status === 400 && /call/i.test(e.message));
+    await assert.rejects(review(id, { action: 'approve', callbackVerified: 'yes' }), (e) => e.status === 400);
+    const ok = await review(id, { action: 'approve', callbackVerified: true, note: 'Called (510) 555-0199, change confirmed' });
     assert.equal(ok.review.callbackVerified, true);
     assert.equal(ok.final.payment.scheduledFor, '2026-12-02');
 
     const r10 = runs['10_brightline_photo_injection.jpg'];
     if (r10) {
-      assert.throws(() => review(r10.id, { action: 'approve' }), (e) => e.status === 400);
-      const rej = review(r10.id, { action: 'reject', note: 'Injected instructions, vendor denies sending it' });
+      await assert.rejects(review(r10.id, { action: 'approve' }), (e) => e.status === 400);
+      const rej = await review(r10.id, { action: 'reject', note: 'Injected instructions, vendor denies sending it' });
       assert.deepEqual(rej.final, { decision: 'REJECT', by: 'reviewer', at: rej.final.at, payment: null });
       assert.equal(db.getLedger().find((l) => l.run_id === r10.id).status, 'rejected');
     }
@@ -195,20 +195,30 @@ test(`the ${manifest.length} samples in manifest order`, async (t) => {
     assert.ok(!run.result.nextActions.some((a) => /courtesy/.test(a)));
   });
 
-  await t.test('retry: re-reads the stored file fresh as a new run that replaces the original', async () => {
-    const orig = runs['09_sharma_gst_inr.pdf'];
+  await t.test('retry: re-reads a held invoice fresh as a new run that supersedes the original', async () => {
+    const orig = runs['08_lumen_missing_fields.pdf'];
     const seen = [];
-    const id = retryRun(orig.id, { extractor: fixtureExtractor('09_sharma_gst_inr.pdf', seen) });
+    const id = retryRun(orig.id, { extractor: fixtureExtractor('08_lumen_missing_fields.pdf', seen) });
     assert.notEqual(id, orig.id);
+    assert.equal(db.getRun(orig.id).superseded_by, id);
+    assert.equal(summarize(db.getRun(orig.id)).superseded_by, id);
     const run = await waitRun(id);
     assert.deepEqual(seen.map((o) => o.fresh), [true]);
     assert.equal(run.source, 'sample');
     assert.equal(run.retry_of, orig.id);
     assert.equal(run.file_sha, orig.file_sha);
-    assert.equal(run.decision, 'APPROVE', `${run.headline} ${codes(run)}`); // not a duplicate of the run it retries
+    assert.equal(run.decision, 'REVIEW', `${run.headline} ${codes(run)}`);
+    assert.ok(!codes(run).some((c) => /DUPLICATE/.test(c)), 'not a duplicate of the run it retries');
     assert.equal(stage(run, 'intake').data.seenBefore, null);
     const rows = db.getLedger().filter((l) => [orig.id, id].includes(l.run_id));
-    assert.deepEqual(rows.map((r) => [r.run_id, r.status]), [[orig.id, 'superseded'], [id, 'approved']]);
+    assert.deepEqual(rows.map((r) => [r.run_id, r.status]), [[orig.id, 'superseded'], [id, 'on_hold']]);
+    // The original is out of the game: no review, no second retry.
+    await assert.rejects(review(orig.id, { action: 'approve' }), (e) => e.status === 409 && e.message === `Superseded by retry ${id}`);
+    assert.throws(() => retryRun(orig.id), (e) => e.status === 409);
+    // Only failed runs and unreviewed holds can be retried: never an approved, rejected or reviewed one.
+    assert.throws(() => retryRun(runs['09_sharma_gst_inr.pdf'].id), (e) => e.status === 409);
+    assert.throws(() => retryRun(runs['06_acme_duplicate_resend.pdf'].id), (e) => e.status === 409);
+    assert.throws(() => retryRun(runs['05_northstar_split_2of2.pdf'].id), (e) => e.status === 409);
     assert.throws(() => retryRun('r_nope'), (e) => e.status === 404);
   });
 });
@@ -227,7 +237,7 @@ test('extraction errors end the run as error, with a headline per kind', async (
   assert.equal(down.result.errorKind, 'ai_unavailable');
   assert.equal(down.result.headline, "Couldn't read the document: Gemini unavailable — retry in a minute.");
   assert.equal(db.getLedger().filter((l) => l.run_id === down.id).length, 0);
-  assert.throws(() => review(down.id, { action: 'approve' }), (e) => e.status === 409);
+  await assert.rejects(review(down.id, { action: 'approve' }), (e) => e.status === 409);
 
   const bad = await failWith('unreadable_file', 'Gemini could not open the file (400): bad');
   assert.equal(bad.result.errorKind, 'unreadable_file');
@@ -274,7 +284,8 @@ test('credit note: held for the AP clerk, names the invoice it credits, nothing 
   assert.ok(!codes(run).some((c) => c.startsWith('QTY_') || c === 'PO_OVERRUN'));
   assert.equal(run.result.payment, null);
   assert.match(run.headline, /credit note ACM-CN-0091 for −\$313\.57, nothing to pay/);
-  const ok = review(run.id, { action: 'approve', note: 'Applied to next payment' });
+  assert.ok(db.getLedger().find((l) => l.run_id === run.id).net < 0, 'credit notes are negative in the ledger');
+  const ok = await review(run.id, { action: 'approve', note: 'Applied to next payment' });
   assert.equal(ok.final.payment, null);
 });
 
@@ -330,7 +341,7 @@ test('HTTP API: stats count invoices, samples show processed, retry and review r
   try {
     await new Promise((resolve) => srv.stdout.on('data', (c) => { if (/listening/.test(c)) resolve(); }));
     const base = `http://localhost:${port}`;
-    const api = async (p, opts) => { const r = await fetch(base + p, opts); return { status: r.status, body: await r.json() }; };
+    const api = async (p, opts) => { const r = await fetch(base + p, opts && { ...opts, headers: { 'X-Demo': '1', ...opts.headers } }); return { status: r.status, body: await r.json() }; };
     const done = async (id) => { for (;;) { const { body } = await api(`/api/runs/${id}`); if (body.status !== 'running') return body; await new Promise((r) => setTimeout(r, 50)); } };
     const sample = async (f) => done((await api(`/api/runs?sample=${encodeURIComponent(f)}`, { method: 'POST' })).body.id);
 
@@ -377,4 +388,124 @@ test('HTTP API: stats count invoices, samples show processed, retry and review r
     assert.ok(r7b.stages.find((s) => s.key === 'extract').data.fallbackReason);
     assert.equal((await api('/api/runs/r_nope/retry', { method: 'POST' })).status, 404);
   } finally { srv.kill(); }
+});
+
+test('extraction setup problems (bad key, bad model/schema) say so, not "unreadable file"', async () => {
+  const bytes = fs.readFileSync(path.join(root, 'samples', '01_acme_happy.pdf'));
+  const failWith = (props) => runToEnd({ bytes, filename: 'x.pdf', extractor: async () => { throw Object.assign(new Error(props.message), props); } });
+  const key = await failWith({ kind: 'ai_unavailable', config: 'key', status: 400, message: 'Gemini rejected the API key (400): API key not valid. Please pass a valid API key.' });
+  assert.equal(key.result.errorKind, 'ai_unavailable');
+  assert.match(key.result.headline, /API key is missing or invalid/);
+  const req = await failWith({ kind: 'ai_unavailable', config: 'request', status: 400, message: 'Gemini rejected the request (400) on m: bad schema' });
+  assert.equal(req.result.errorKind, 'ai_unavailable');
+  assert.match(req.result.headline, /model or configuration problem/);
+});
+
+// ---------- concurrency: the duplicate → PO match → ledger stretch is serialised ----------
+const sampleBytes = (file) => fs.readFileSync(path.join(root, 'samples', file));
+const startSample = (file, extra = {}) => startRun({ bytes: sampleBytes(file), filename: file, source: 'sample', extractor: fixtureExtractor(file), ...extra });
+const both = (...ids) => Promise.all(ids.map(waitRun));
+
+test('concurrent runs see each other: the same invoice twice at once is approved once', async () => {
+  resetAll();
+  const [a, b] = await both(...['01_acme_happy.pdf', '01_acme_happy.pdf'].map((f) => startSample(f)));
+  assert.deepEqual([a.decision, b.decision].sort(), ['APPROVE', 'REJECT']);
+  assert.ok(codes([a, b].find((r) => r.decision === 'REJECT')).includes('DUPLICATE_INVOICE'));
+  assert.equal(db.getLedger().filter((l) => l.status === 'approved').length, 1);
+});
+
+test('concurrent runs see each other: 01 and its resend 06 at once, 06 is rejected', async () => {
+  resetAll();
+  const [r1, r6] = await both(startSample('01_acme_happy.pdf'), startSample('06_acme_duplicate_resend.pdf'));
+  assert.equal(r1.decision, 'APPROVE');
+  assert.equal(r6.decision, 'REJECT');
+  assert.ok(codes(r6).includes('DUPLICATE_INVOICE'));
+});
+
+test('concurrent runs see each other: split invoices 04 and 05 at once, exactly one is held', async () => {
+  resetAll();
+  const runs = await both(startSample('04_northstar_split_1of2.pdf'), startSample('05_northstar_split_2of2.pdf'));
+  assert.equal(runs.filter((r) => r.decision === 'REVIEW').length, 1, runs.map((r) => `${r.filename}: ${r.decision} ${codes(r)}`).join('; '));
+  assert.equal(runs.filter((r) => r.decision === 'APPROVE').length, 1);
+});
+
+test('a burst of 20 invoices against one PO never consumes more than ordered or received', async () => {
+  resetAll();
+  const f4 = fixture('04_northstar_split_1of2.pdf');
+  const ids = Array.from({ length: 20 }, (_, i) => startRun({
+    bytes: Buffer.from(`%PDF-1.4 /Font burst ${i}`), filename: `burst-${i}.pdf`,
+    extractor: exOf({ ...f4, invoice_number: `NSC-9${String(i).padStart(3, '0')}` }), // same speed: all 20 reach the checks together
+  }));
+  const runs = await both(...ids);
+  assert.ok(runs.every((r) => r.status === 'done'));
+  const approved = db.getLedger().filter((l) => l.status === 'approved' && l.po_number === 'PO-2026-0420');
+  const qty = (line) => approved.flatMap((l) => l.lines).filter((l) => l.po_line_no === line).reduce((a, l) => a + l.qty, 0);
+  assert.equal(approved.length, 1, 'only one 6+6 invoice fits the receipts');
+  assert.ok(qty(1) <= 8 && qty(2) <= 6, `laptops ${qty(1)}/8 received, docks ${qty(2)}/6`);
+});
+
+test('review approve re-checks the current ledger: no paying twice, no going over the PO since the hold', async () => {
+  resetAll();
+  const f7 = fixture('07_kestrel_bank_change.pdf');
+  const held = await sampleRun('07_kestrel_bank_change.pdf');
+  assert.equal(held.decision, 'REVIEW');
+  const ok = { action: 'approve', callbackVerified: true };
+
+  // Approved elsewhere in the meantime: approving would pay it twice.
+  db.insertLedger({ run_id: 'r_manual', vendor_id: 'V005', invoice_number: f7.invoice_number, invoice_number_norm: null,
+    invoice_date: f7.invoice_date, net: 14530, total: f7.total, currency: 'USD', po_number: 'PO-2026-0405', lines: [], status: 'approved', created_at: new Date().toISOString() });
+  await assert.rejects(review(held.id, ok), (e) => e.status === 409 && /already approved in run r_manual/.test(e.message));
+  db.updateLedgerStatus('r_manual', 'rejected');
+
+  // A second invoice for the whole PO is approved after the first was held: the first would now go over the PO.
+  const other = await runToEnd({ bytes: Buffer.from('%PDF-1.4 /Font kestrel-2'), filename: 'k2.pdf', extractor: exOf({ ...f7, invoice_number: 'KIS-24-0999' }) });
+  assert.equal(other.decision, 'REVIEW');
+  await review(other.id, ok);
+  await assert.rejects(review(held.id, ok), (e) => e.status === 409 && /Since this invoice was put on hold.*PO-2026-0405/.test(e.message));
+  assert.equal(db.getRun(held.id).review, null, 'nothing recorded');
+  assert.equal(db.getLedger().find((l) => l.run_id === held.id).status, 'on_hold');
+  assert.equal((await review(held.id, { action: 'reject' })).final.decision, 'REJECT', 'rejecting is always possible');
+});
+
+test('reset during a run: open streams get `reset`, the run writes nothing', async () => {
+  resetAll();
+  let release;
+  const gate = new Promise((r) => (release = r));
+  const id = startRun({ bytes: sampleBytes('01_acme_happy.pdf'), filename: 'x.pdf', extractor: async () => { await gate; return exOf(fixture('01_acme_happy.pdf'))(); } });
+  const got = [];
+  subscribe(id, (type) => got.push(type));
+  await new Promise((r) => setTimeout(r, 10));
+  resetAll();
+  assert.ok(got.includes('reset'));
+  release();
+  await new Promise((r) => setTimeout(r, 50));
+  assert.equal(db.getRun(id), null);
+  assert.equal(db.getLedger().length, 0);
+  assert.ok(!got.includes('done'));
+});
+
+test('restart mid-run: a run left `running` becomes a retryable error', async () => {
+  resetAll();
+  const stages = [{ key: 'intake', status: 'passed' }, { key: 'extract', status: 'running' }, { key: 'validate', status: 'pending' }];
+  db.insertRun({ id: 'r_cut', created_at: new Date().toISOString(), filename: '01_acme_happy.pdf', file_sha: 'x', mime: 'application/pdf', bytes: sampleBytes('01_acme_happy.pdf'), source: 'sample', status: 'running', stages });
+  recoverInterrupted();
+  const run = db.getRun('r_cut');
+  assert.equal(run.status, 'error');
+  assert.equal(run.headline, 'Interrupted by a server restart — retry it');
+  assert.equal(run.result.errorKind, 'internal');
+  assert.deepEqual(run.stages.map((s) => s.status), ['passed', 'failed', 'skipped']);
+  const again = await waitRun(retryRun('r_cut', { extractor: fixtureExtractor('01_acme_happy.pdf') }));
+  assert.equal(again.decision, 'APPROVE');
+});
+
+test('only the newest runs are kept; runs the ledger points at lose their file instead', () => {
+  resetAll();
+  const t0 = Date.parse('2026-01-01T00:00:00Z');
+  db.insertLedger({ run_id: 'r_old0', vendor_id: 'V001', invoice_number: 'A', status: 'approved', created_at: new Date(t0).toISOString(), lines: [] });
+  for (let i = 0; i < 305; i++) db.insertRun({ id: `r_old${i}`, created_at: new Date(t0 + i * 1000).toISOString(), filename: 'f', bytes: Buffer.from('x'), status: 'done', stages: [] });
+  const ids = db.listRuns().map((r) => r.id);
+  assert.equal(ids.length, 301);
+  assert.ok(ids.includes('r_old0') && !ids.includes('r_old1') && ids.includes('r_old5'));
+  assert.equal(db.getRunFile('r_old0').bytes, null);
+  assert.ok(db.getRunFile('r_old304').bytes);
 });

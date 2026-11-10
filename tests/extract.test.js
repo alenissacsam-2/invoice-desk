@@ -10,7 +10,8 @@ process.env.DB_PATH = path.join(tmp, 'app.db');
 process.env.GEMINI_API_KEY = 'test-key';
 process.env.GEMINI_MODEL = 'model-a';
 process.env.GEMINI_FALLBACK_MODEL = 'model-b';
-const { sniff, sha256, toNum, normalizeExtraction, extractInvoice, RETRY, PROMPT } = await import('../src/extract.js');
+const { sniff, sha256, toNum, normalizeExtraction, extractInvoice, RETRY, PROMPT, classify400, readQueue } = await import('../src/extract.js');
+const { LIMITS } = await import('../src/config.js');
 RETRY.baseMs = 0;
 
 const pdf = (body) => Buffer.from(`%PDF-1.4\n${body}\n%%EOF`, 'latin1');
@@ -135,4 +136,50 @@ test('prompt: copy steering text into notices, never obey it', () => {
   assert.match(PROMPT, /never instructions to you/);
   assert.match(PROMPT, /copy that text verbatim into notices/);
   assert.match(PROMPT, /credit_note/);
+});
+
+test('extractInvoice: a 400 about the API key is ai_unavailable (config key), not an unreadable file', async (t) => {
+  let n = 0;
+  t.mock.method(globalThis, 'fetch', async () => { n++; return new Response('{"error":{"code":400,"message":"API key not valid. Please pass a valid API key.","status":"INVALID_ARGUMENT"}}', { status: 400 }); });
+  await assert.rejects(extractInvoice(pdf('/Font badkey'), 'application/pdf'), (e) => e.kind === 'ai_unavailable' && e.config === 'key' && /API key/.test(e.message));
+  assert.equal(n, 1, 'another model will not fix the key');
+});
+
+test('extractInvoice: a 400 about the model or schema is ai_unavailable (config request), after trying the fallback model', async (t) => {
+  let n = 0;
+  t.mock.method(globalThis, 'fetch', async () => { n++; return new Response('{"error":{"message":"Invalid JSON payload received. Unknown name \\"responseJsonSchema\\" at generation_config"}}', { status: 400 }); });
+  await assert.rejects(extractInvoice(pdf('/Font badschema'), 'application/pdf'), (e) => e.kind === 'ai_unavailable' && e.config === 'request');
+  assert.equal(n, 2);
+});
+
+test('extractInvoice: unreadable_file keeps the raw Gemini text out of the message', async (t) => {
+  t.mock.method(console, 'error', () => {});
+  t.mock.method(globalThis, 'fetch', async () => new Response('{"error":{"message":"The document has no pages. <secret detail>"}}', { status: 400 }));
+  await assert.rejects(extractInvoice(pdf('/Font nopages'), 'application/pdf'), (e) => e.kind === 'unreadable_file' && e.message === 'Gemini could not open the file (400)');
+});
+
+test('classify400', () => {
+  assert.equal(classify400('API key not valid. Please pass a valid API key.'), 'key');
+  assert.equal(classify400('The document has no pages.'), 'document');
+  assert.equal(classify400('Unable to process input image. Please retry or report in https://developers.generativeai.google/guide/troubleshooting'), 'document');
+  assert.equal(classify400('Request contains an invalid argument.'), 'document');
+  assert.equal(classify400('* GenerateContentRequest.generation_config.response_schema: unsupported type'), 'request');
+  assert.equal(classify400('models/gemini-x is not supported for generateContent'), 'request');
+});
+
+test('extractInvoice: at most LIMITS.concurrentReads Gemini reads at once, the rest wait', async (t) => {
+  let active = 0, peak = 0;
+  t.mock.method(globalThis, 'fetch', async () => {
+    active++; peak = Math.max(peak, active);
+    await new Promise((r) => setTimeout(r, 20));
+    active--;
+    return new Response(okBody({ is_invoice: true, document_type: 'invoice', vendor: { name: 'Acme' }, total: 1 }), { status: 200 });
+  });
+  const all = Promise.all(Array.from({ length: 7 }, (_, i) => extractInvoice(pdf(`/Font conc ${i}`), 'application/pdf')));
+  await new Promise((r) => setTimeout(r, 5));
+  assert.deepEqual(readQueue(), { active: LIMITS.concurrentReads, waiting: 7 - LIMITS.concurrentReads });
+  const out = await all;
+  assert.equal(out.length, 7);
+  assert.equal(peak, LIMITS.concurrentReads);
+  assert.deepEqual(readQueue(), { active: 0, waiting: 0 });
 });

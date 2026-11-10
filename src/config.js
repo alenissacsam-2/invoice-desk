@@ -35,7 +35,17 @@ export const GEMINI = {
   fallback: process.env.GEMINI_FALLBACK_MODEL || 'gemini-3.1-flash-lite',
 };
 
-export const MAX_UPLOAD_BYTES = 10 * 1024 * 1024;
+export const MAX_UPLOAD_BYTES = 8 * 1024 * 1024;
+
+// Public-demo protection (memory and Gemini quota). Mutable so tests can lower them.
+export const LIMITS = {
+  runsPerIpPerHour: 30, // POST /api/runs and /retry, per client IP
+  resetEverySec: 30, // POST /api/reset, per client IP
+  geminiDailyCap: process.env.GEMINI_DAILY_CAP ? Number(process.env.GEMINI_DAILY_CAP) : 200, // runs needing a fresh Gemini read, per UTC day
+  concurrentReads: 4, // Gemini reads in flight at once; the rest wait
+  maxQueuedReads: 20, // beyond this many waiting, uploads get 503
+  maxRuns: 300, // runs kept; older ones are pruned on insert
+};
 
 /** 'YYYY-MM-DD'. APP_TODAY pins the date so demos and tests are reproducible. */
 export function today() {

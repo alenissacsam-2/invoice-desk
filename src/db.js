@@ -1,7 +1,7 @@
 import { DatabaseSync } from 'node:sqlite';
 import fs from 'node:fs';
 import path from 'node:path';
-import { PATHS } from './config.js';
+import { PATHS, LIMITS } from './config.js';
 
 let db;
 
@@ -54,7 +54,7 @@ export function openDb() {
   db.exec(`
     CREATE TABLE IF NOT EXISTS runs (id TEXT PRIMARY KEY, created_at TEXT, filename TEXT, file_sha TEXT, mime TEXT, bytes BLOB,
       source TEXT, status TEXT, decision TEXT, headline TEXT, vendor_id TEXT, invoice_number TEXT, total REAL, currency TEXT,
-      po_number TEXT, ms INTEGER, stages TEXT, extraction TEXT, result TEXT, review TEXT, final TEXT, retry_of TEXT);
+      po_number TEXT, ms INTEGER, stages TEXT, extraction TEXT, result TEXT, review TEXT, final TEXT, retry_of TEXT, superseded_by TEXT);
     CREATE TABLE IF NOT EXISTS ledger (id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT, vendor_id TEXT, invoice_number TEXT,
       invoice_number_norm TEXT, invoice_date TEXT, net REAL, total REAL, currency TEXT, po_number TEXT, lines TEXT, status TEXT, created_at TEXT);
     CREATE TABLE IF NOT EXISTS extraction_cache (file_sha TEXT PRIMARY KEY, model TEXT, json TEXT, created_at TEXT, latency_ms INTEGER);
@@ -69,6 +69,7 @@ export function openDb() {
 function migrate() {
   const has = (table, col) => db.prepare(`PRAGMA table_info(${table})`).all().some((c) => c.name === col);
   if (!has('runs', 'retry_of')) db.exec('ALTER TABLE runs ADD COLUMN retry_of TEXT');
+  if (!has('runs', 'superseded_by')) db.exec('ALTER TABLE runs ADD COLUMN superseded_by TEXT');
   if (!has('extraction_cache', 'latency_ms')) {
     db.exec('ALTER TABLE extraction_cache ADD COLUMN latency_ms INTEGER');
     // Recover the original read time from the latest fresh (uncached) run of the same file, if one is still around.
@@ -134,7 +135,17 @@ export function getLedger() {
   return openDb().prepare('SELECT * FROM ledger ORDER BY id').all().map((r) => ({ ...r, lines: r.lines ? JSON.parse(r.lines) : [] }));
 }
 
-export function insertRun(run) { insert('runs', run); }
+export function insertRun(run) {
+  insert('runs', run);
+  pruneRuns();
+}
+
+/** Keep the newest `max` runs: older ones are deleted, or, if the ledger still points at them, only lose their file bytes. */
+export function pruneRuns(max = LIMITS.maxRuns) {
+  const old = `SELECT id FROM runs WHERE status != 'running' ORDER BY created_at DESC, rowid DESC LIMIT -1 OFFSET ${Number(max)}`;
+  openDb().exec(`DELETE FROM runs WHERE id IN (${old}) AND id NOT IN (SELECT run_id FROM ledger WHERE run_id IS NOT NULL);
+    UPDATE runs SET bytes = NULL WHERE bytes IS NOT NULL AND id IN (${old});`);
+}
 
 export function updateRun(id, patch) {
   const keys = Object.keys(patch);
@@ -143,7 +154,7 @@ export function updateRun(id, patch) {
     .run(...keys.map((k) => encode(k, patch[k])), id);
 }
 
-const RUN_COLS = 'id, created_at, filename, file_sha, mime, source, status, decision, headline, vendor_id, invoice_number, total, currency, po_number, ms, retry_of';
+const RUN_COLS = 'id, created_at, filename, file_sha, mime, source, status, decision, headline, vendor_id, invoice_number, total, currency, po_number, ms, retry_of, superseded_by';
 
 export function getRun(id) {
   return parseRun(openDb().prepare(`SELECT ${RUN_COLS}, stages, extraction, result, review, final FROM runs WHERE id = ?`).get(id));

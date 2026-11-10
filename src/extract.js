@@ -1,5 +1,5 @@
 import crypto from 'node:crypto';
-import { GEMINI } from './config.js';
+import { GEMINI, LIMITS } from './config.js';
 import { getCachedExtraction, putCachedExtraction } from './db.js';
 
 // ---------- intake helpers ----------
@@ -179,8 +179,31 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 class ApiError extends Error {
   constructor(status, message) { super(message); this.status = status; }
 }
-/** Error the pipeline can explain: kind 'unreadable_file' (the document itself was refused) or 'ai_unavailable'. */
-const kindError = (kind, message, status) => Object.assign(new Error(message), { kind, ...(status != null && { status }) });
+/**
+ * Error the pipeline can explain: kind 'unreadable_file' (the document itself was refused) or 'ai_unavailable';
+ * `config` 'key' | 'request' marks a setup problem on our side (bad API key, model or schema), not an outage.
+ */
+const kindError = (kind, message, status, config) => Object.assign(new Error(message), { kind, ...(status != null && { status }), ...(config && { config }) });
+
+/** Which side a Gemini 400 is about: 'key', 'document' (corrupt, password-protected, unreadable) or 'request' (model/schema/config). */
+export function classify400(message = '') {
+  if (/api[ _-]?key/i.test(message)) return 'key';
+  // The bare "Request contains an invalid argument." is what Gemini returns for corrupt inline data; our request is otherwise fixed.
+  if (/document|file|pdf|image|page|password|encrypt|mime|inline.?data|corrupt|decode|unable to process|^request contains an invalid argument.?$/i.test(message.trim())) return 'document';
+  return 'request';
+}
+
+// At most LIMITS.concurrentReads Gemini reads at once (each holds the file plus its base64 copy in memory); the rest wait in order.
+const reads = { active: 0, queue: [] };
+export const readQueue = () => ({ active: reads.active, waiting: reads.queue.length });
+async function withReadSlot(fn) {
+  if (reads.active < LIMITS.concurrentReads) reads.active++;
+  else await new Promise((r) => reads.queue.push(r)); // the releasing read hands its slot over
+  try { return await fn(); } finally {
+    const next = reads.queue.shift();
+    if (next) next(); else reads.active--;
+  }
+}
 
 async function callGemini(model, bytes, mime) {
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`;
@@ -232,14 +255,18 @@ export async function extractInvoice(bytes, mime, { fresh = false, sha, models }
     return { extraction: cachedRow.json, model: cachedRow.model, cached: true, latencyMs: Date.now() - t0, originalLatencyMs: cachedRow.latency_ms ?? null, attempts: [] };
   }
   // AI unreachable: fall back to an earlier reading of the same bytes if there is one.
-  const fail = (message, status) => {
+  const fail = (message, status, config) => {
     if (cachedRow) return { extraction: cachedRow.json, model: cachedRow.model, cached: true, latencyMs: Date.now() - t0, originalLatencyMs: cachedRow.latency_ms ?? null, attempts, fallbackReason: message };
-    throw kindError('ai_unavailable', message, status);
+    throw kindError('ai_unavailable', message, status, config);
   };
   const attempts = [];
-  if (!GEMINI.key) return fail('GEMINI_API_KEY is not set, so the invoice cannot be read. Add it to .env or the environment.');
+  if (!GEMINI.key) return fail('GEMINI_API_KEY is not set, so the invoice cannot be read. Add it to .env or the environment.', undefined, 'key');
 
   models ??= [...new Set([GEMINI.primary, GEMINI.fallback].filter(Boolean))];
+  return withReadSlot(() => callModels(bytes, mime, sha, models, t0, attempts, fail));
+}
+
+async function callModels(bytes, mime, sha, models, t0, attempts, fail) {
   let last;
   outer: for (const model of models) {
     for (let i = 0; i < RETRY.attemptsPerModel; i++) {
@@ -255,15 +282,22 @@ export async function extractInvoice(bytes, mime, { fresh = false, sha, models }
         if (!(e instanceof ApiError)) throw e;
         attempts.push({ model, status: e.status, ms: Date.now() - a0, error: e.message });
         last = e;
-        if (e.status === 401 || e.status === 403) break outer; // bad key: another model won't help
-        // 400 = Gemini refused the document itself (corrupt, password-protected): another model or the cache won't help.
-        if (e.status === 400) throw kindError('unreadable_file', `Gemini could not open the file (400): ${e.message}`, 400);
+        if (e.status === 400) e.side = classify400(e.message);
+        if (e.status === 401 || e.status === 403 || e.side === 'key') break outer; // bad key: another model won't help
+        if (e.side === 'document') {
+          // Gemini refused the document itself (corrupt, password-protected): another model or the cache won't help.
+          // The raw Gemini text stays in the server log; the user sees a plain explanation.
+          console.error(`Gemini 400 on ${model} for ${sha.slice(0, 12)}: ${e.message}`);
+          throw kindError('unreadable_file', 'Gemini could not open the file (400)', 400);
+        }
+        if (e.status === 400) break; // model/schema problem: try the fallback model, don't retry
         if (!RETRYABLE.has(e.status) && e.status !== 0) break; // 404/bad JSON: try the fallback model, don't retry
       }
     }
   }
   const tried = models.join(' and ');
-  if (last.status === 401 || last.status === 403) return fail(`Gemini rejected the API key (${last.status}): ${last.message}`, last.status);
+  if (last.status === 401 || last.status === 403 || last.side === 'key') return fail(`Gemini rejected the API key (${last.status}): ${last.message}`, last.status, 'key');
+  if (last.side === 'request') return fail(`Gemini rejected the request (400) on ${tried}, a model or configuration problem rather than the file: ${last.message}`, 400, 'request');
   const code = last.status > 0 ? ` (${last.status})` : '';
   return fail(`Gemini is unavailable${code} after retries on ${tried}: ${last.message}`, last.status);
 }
