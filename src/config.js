@@ -20,7 +20,7 @@ export const PATHS = {
 export const TOL = {
   unitPricePct: 2,      // per-line unit price variance vs PO
   headerPct: 2,         // invoice net vs PO expected, percent...
-  headerAbs: 100,       // ...and absolute cap in PO currency; both must hold
+  headerAbs: { USD: 100, INR: 8000, default: 100 }, // ...and absolute cap per PO currency; both must hold
   arithAbs: 0.02,       // rounding slack for arithmetic checks
   poInferMin: 0.85,     // min score to accept an inferred PO
   poAmbiguityMargin: 0.1,

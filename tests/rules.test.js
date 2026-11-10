@@ -363,3 +363,14 @@ test('a payment due date in the past is scheduled for today', () => {
   const r = run(inv({ invoice_date: '2026-09-01', due_date: '2026-10-01' }), [], { m: world() });
   assert.equal(r.result.payment.scheduledFor, TODAY);
 });
+
+test('PO inference survives how a vision model paraphrases the scanned line', () => {
+  const base = fixture('03_peakvalley_scanned_no_po');
+  const vendor = matchVendor(base, master.vendors).vendor;
+  for (const d of ['Office Cleaning Services - Oct 2026', 'Monthly office cleaning, October', 'Janitorial services October 2026']) {
+    const ex = { ...base, line_items: [{ ...base.line_items[0], description: d }] };
+    const r = matchPO(ex, vendor, { ...master, ledger: [] });
+    assert.equal(r.po?.po_number, 'PO-2026-0377', d);
+    assert.deepEqual(r.reasons.filter((x) => x.severity !== 'info'), [], d);
+  }
+});

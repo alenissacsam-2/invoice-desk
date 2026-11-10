@@ -48,7 +48,25 @@ export function normalizeInvoiceNumber(s) {
 
 export const normalizePO = (s) => alnum(s) || null;
 
-const tokens = (s) => String(s ?? '').toLowerCase().split(/[^a-z0-9]+/).filter((t) => t && !STOPWORDS.has(t));
+const MONTHS = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec'];
+// Light stemming so 'monthly'~'month', 'services'~'service', 'October'~'Oct' (vision models paraphrase).
+const stem = (t) => {
+  const m = MONTHS.find((x) => t.startsWith(x) && t.length >= 3);
+  if (m && /^[a-z]+$/.test(t)) return m;
+  if (t.length > 5 && t.endsWith('ly')) t = t.slice(0, -2);
+  if (t.length > 3 && t.endsWith('s') && !t.endsWith('ss')) t = t.slice(0, -1);
+  return t;
+};
+const tokens = (s) => String(s ?? '').toLowerCase().split(/[^a-z0-9]+/).filter((t) => t && !STOPWORDS.has(t)).map(stem);
+
+/** Overlap coefficient |A∩B| / min(|A|,|B|): a short PO description fully contained in a wordier invoice line scores 1. */
+function overlap(a, b) {
+  const A = new Set(tokens(a)), B = new Set(tokens(b));
+  if (!A.size || !B.size) return 0;
+  let inter = 0;
+  for (const t of A) if (B.has(t)) inter++;
+  return inter / Math.min(A.size, B.size);
+}
 
 /** Token Jaccard over lowercased alphanumeric tokens, stopwords and legal suffixes ignored. */
 export function tokenSim(a, b) {
@@ -360,7 +378,7 @@ function bestPoLine(line, poLs) {
   const byCode = code && poLs.find((p) => alnum(p.item_code) === code);
   if (byCode) return { pl: byCode, sim: 1, how: 'item code' };
   let best = null, sim = 0;
-  for (const p of poLs) { const s = tokenSim(line.description, p.description); if (s > sim) { sim = s; best = p; } }
+  for (const p of poLs) { const s = Math.max(tokenSim(line.description, p.description), overlap(line.description, p.description)); if (s > sim) { sim = s; best = p; } }
   return sim >= LINE_MATCH_MIN ? { pl: best, sim, how: 'description' } : { pl: null, sim, how: null };
 }
 
@@ -370,7 +388,7 @@ function scorePO(ex, net, lines, remaining) {
   const desc = invLines.length ? sum(invLines.map((l) => {
     const code = alnum(l.item_code);
     if (code && lines.some((p) => alnum(p.item_code) === code)) return 1;
-    return Math.max(0, ...lines.map((p) => tokenSim(l.description, p.description)));
+    return Math.max(0, ...lines.map((p) => Math.max(tokenSim(l.description, p.description), overlap(l.description, p.description))));
   })) / invLines.length : 0;
   const amount = remaining > 0 && net > 0 ? Math.max(0, 1 - Math.abs(net - remaining) / Math.max(net, remaining)) : 0;
   return { score: 0.5 * desc + 0.5 * amount, desc, amount };
@@ -515,8 +533,9 @@ export function matchPO(ex, vendor, ctx = {}) {
   // Header: (A) this invoice vs PO prices for what it bills; (B) everything invoiced so far vs the PO total.
   let overrun = false, within = null;
   if (sameCur && net !== null) {
-    const ok = (over, basis) => over <= EPS || ((over / basis) * 100 <= TOL.headerPct + EPS && over <= TOL.headerAbs + EPS);
-    const tolTxt = `the limit is ${TOL.headerPct}% and ${pm(TOL.headerAbs)}`;
+    const cap = TOL.headerAbs[po.currency] ?? TOL.headerAbs.default;
+    const ok = (over, basis) => over <= EPS || ((over / basis) * 100 <= TOL.headerPct + EPS && over <= cap + EPS);
+    const tolTxt = `the limit is ${TOL.headerPct}% and ${pm(cap)}`;
     const extra = net - expected;
     const extraPct = expected > 0 ? (extra / expected) * 100 : Infinity;
     const unmatchedTxt = unmatched.length ? `, ${Math.abs(sum(unmatched.map((u) => u.amt)) - extra) < 0.01 ? 'all from' : 'including'} ${humanList(unmatched.map((l) => l.description))}, which ${unmatched.length > 1 ? 'are' : 'is'} not on the PO` : '';
@@ -525,7 +544,7 @@ export function matchPO(ex, vendor, ctx = {}) {
     if (!aOk) {
       overrun = true;
       s.reason('PO_OVERRUN', 'hold', `This invoice comes to ${pm(net)} before tax, ${pm(extra)}${Number.isFinite(extraPct) ? ` (${pct1(extraPct)})` : ''} more than the PO prices for what it bills (${pm(expected)})${unmatchedTxt}; ${tolTxt}.`);
-    } else if (extra > EPS) within = `Billed ${pm(net)} before tax against ${pm(expected)} at PO prices, ${pm(extra)} (${pct1(extraPct)}) more${unmatchedTxt}; that is within our ${TOL.headerPct}% / ${pm(TOL.headerAbs)} tolerance.`;
+    } else if (extra > EPS) within = `Billed ${pm(net)} before tax against ${pm(expected)} at PO prices, ${pm(extra)} (${pct1(extraPct)}) more${unmatchedTxt}; that is within our ${TOL.headerPct}% / ${pm(cap)} tolerance.`;
 
     const total = num(po.net_total), cum = c.prevNet + net, over = cum - total;
     const bOk = total > 0 ? ok(over, total) : over <= EPS;
@@ -536,7 +555,7 @@ export function matchPO(ex, vendor, ctx = {}) {
         ? `With ${pm(c.prevNet)} already invoiced, this ${pm(net)} would take ${po.po_number} to ${pm(cum)}, ${pm(over)} (${pct1((over / total) * 100)}) over its ${pm(total)} total; ${tolTxt}.`
         : `This invoice's ${pm(net)} before tax is ${pm(over)} (${pct1((over / total) * 100)}) over the ${pm(total)} total of ${po.po_number}; ${tolTxt}.`);
     } else if (!bOk) overrun = true;
-    else if (over > EPS && !within) within = `Invoiced so far comes to ${pm(cum)} against the ${pm(total)} PO total, ${pm(over)} (${pct1((over / total) * 100)}) over; that is within our ${TOL.headerPct}% / ${pm(TOL.headerAbs)} tolerance.`;
+    else if (over > EPS && !within) within = `Invoiced so far comes to ${pm(cum)} against the ${pm(total)} PO total, ${pm(over)} (${pct1((over / total) * 100)}) over; that is within our ${TOL.headerPct}% / ${pm(cap)} tolerance.`;
   }
   within ??= priceWithin;
   if (within && !overrun && !priceHolds) s.reason('VARIANCE_WITHIN_TOLERANCE', 'info', within);
