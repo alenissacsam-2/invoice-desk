@@ -12,7 +12,9 @@ export function sniff(bytes) {
     const pages = (s.match(/\/Type\s*\/Page(?![a-zA-Z])/g) || []).length;
     // shortcut: /Font in the raw bytes = text layer; compressed object streams can hide /Font (or page objects), upgrade to pdf.js if it misfires.
     const hasTextLayer = /\/Font\b/.test(s);
-    return { mime: 'application/pdf', pages: pages || 1, hasTextLayer, kind: hasTextLayer ? 'digital_text' : 'scanned_image' };
+    // Caught before a Gemini read: encrypted (/Encrypt in the trailer), or truncated with no page object and no %%EOF.
+    const broken = /\/Encrypt\b/.test(s) ? 'encrypted' : !pages && !s.includes('%%EOF') ? 'corrupt' : null;
+    return { mime: 'application/pdf', pages: pages || 1, hasTextLayer, kind: hasTextLayer ? 'digital_text' : 'scanned_image', broken };
   }
   if (b.length >= 8 && b.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) {
     return { mime: 'image/png', pages: 1, hasTextLayer: false, kind: 'image' };

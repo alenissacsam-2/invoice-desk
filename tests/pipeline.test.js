@@ -8,6 +8,7 @@ import { spawn } from 'node:child_process';
 // Isolate the DB, pin the date and skip the readability pauses before any module reads the env.
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'pipeline-test-'));
 process.env.DB_PATH = path.join(tmp, 'app.db');
+process.env.SEED_DB = ''; // start empty, not from the committed data/seed.db
 process.env.APP_TODAY ??= '2026-11-10';
 process.env.PIPELINE_DELAY = '0';
 const { startRun, subscribe, reviewRun, retryRun, summarize, resetAll, recoverInterrupted } = await import('../src/pipeline.js');
@@ -254,7 +255,7 @@ test('extraction errors end the run as error, with a headline per kind', async (
 
 test('not an invoice: extract fails, middle stages skipped, decision REJECT', async () => {
   const quote = { ...fixture('01_acme_happy.pdf'), is_invoice: false, document_type: 'quote' };
-  const run = await runToEnd({ bytes: Buffer.from('%PDF-1.4 quote'), filename: 'q.pdf', extractor: exOf(quote) });
+  const run = await runToEnd({ bytes: Buffer.from('%PDF-1.4 quote\n%%EOF'), filename: 'q.pdf', extractor: exOf(quote) });
   assert.equal(run.status, 'done');
   assert.equal(run.decision, 'REJECT');
   assert.deepEqual(codes(run), ['NOT_AN_INVOICE']);
@@ -272,7 +273,7 @@ test('credit note: held for the AP clerk, names the invoice it credits, nothing 
     subtotal: -289, tax_lines: [{ label: 'Sales tax 8.5%', rate_pct: 8.5, amount: -24.57 }], tax_total: -24.57, total: -313.57,
     notices: ['Credit against invoice ACM-INV-10458'],
   };
-  const run = await runToEnd({ bytes: Buffer.from('%PDF-1.4 /Font credit-note'), filename: 'cn.pdf', extractor: exOf(credit) });
+  const run = await runToEnd({ bytes: Buffer.from('%PDF-1.4 /Font credit-note\n%%EOF'), filename: 'cn.pdf', extractor: exOf(credit) });
   assert.equal(run.decision, 'REVIEW', `${run.headline} ${codes(run)}`);
   assert.ok(!codes(run).includes('NOT_AN_INVOICE'));
   assert.ok(!codes(run).includes('ARITHMETIC_MISMATCH'), 'negative amounts add up');
@@ -293,11 +294,34 @@ test('junk bytes fail intake; an extractor bug never escapes', async () => {
   const junk = await runToEnd({ bytes: Buffer.from('hello'), filename: 'j.txt', extractor: fixtureExtractor('01_acme_happy.pdf') });
   assert.equal(junk.status, 'error');
   assert.equal(stage(junk, 'intake').status, 'failed');
-  const bug = await runToEnd({ bytes: Buffer.from('%PDF-1.4 x'), filename: 'b.pdf', extractor: async () => ({ extraction: null, model: 'x', cached: false, latencyMs: 0, attempts: [] }) });
+  const bug = await runToEnd({ bytes: Buffer.from('%PDF-1.4 x\n%%EOF'), filename: 'b.pdf', extractor: async () => ({ extraction: null, model: 'x', cached: false, latencyMs: 0, attempts: [] }) });
   assert.equal(bug.status, 'error');
   assert.equal(bug.result.errorKind, 'internal');
   assert.equal(stage(bug, 'extract').status, 'failed');
   assert.match(bug.result.headline, /^Something went wrong in read the invoice/);
+});
+
+test('broken or encrypted PDFs fail intake without a Gemini read', async () => {
+  let calls = 0;
+  const extractor = async () => { calls++; return fixtureExtractor('01_acme_happy.pdf')(); };
+  const cut = await runToEnd({ bytes: Buffer.from('%PDF-1.7\n1 0 obj << /Type /Catalog'), filename: 'cut.pdf', extractor });
+  assert.equal(cut.result.errorKind, 'unreadable_file');
+  assert.equal(cut.result.headline, "Couldn't open this file — it may be corrupt or password-protected. Ask the vendor for a new copy.");
+  assert.equal(stage(cut, 'intake').status, 'failed');
+  const enc = await runToEnd({ bytes: Buffer.from('%PDF-1.7\n2 0 obj <</Type/Page>> endobj\ntrailer << /Root 1 0 R /Encrypt 5 0 R >>\n%%EOF'), filename: 'enc.pdf', extractor });
+  assert.equal(enc.result.errorKind, 'unreadable_file');
+  assert.match(enc.result.headline, /password-protected. Ask the vendor for a new copy.$/);
+  assert.equal(calls, 0);
+});
+
+test('Net 30 terms with a day/month-swapped invoice date hold for a check (sample 05)', async () => {
+  resetAll(); // earlier tests already booked 05
+  const ex = fixture('05_northstar_split_2of2.pdf');
+  Object.assign(ex, { invoice_date: '2026-05-11', due_date: '2026-05-12', payment_terms: 'Net 30' });
+  const run = await runToEnd({ bytes: Buffer.from('%PDF-1.4 date-swap\n%%EOF'), filename: 'd.pdf', extractor: exOf(ex) });
+  assert.equal(run.result.decision, 'REVIEW');
+  const r = run.result.reasons.find((x) => x.code === 'LOW_CONFIDENCE');
+  assert.equal(r.message, "Invoice date 11 May 2026 and due date 12 May 2026 don't fit the printed Net 30 terms — the date may have been misread (5/11 vs 11/5). Check the document.");
 });
 
 test('openDb migrates a database from the previous schema', async () => {
@@ -433,7 +457,7 @@ test('a burst of 20 invoices against one PO never consumes more than ordered or 
   resetAll();
   const f4 = fixture('04_northstar_split_1of2.pdf');
   const ids = Array.from({ length: 20 }, (_, i) => startRun({
-    bytes: Buffer.from(`%PDF-1.4 /Font burst ${i}`), filename: `burst-${i}.pdf`,
+    bytes: Buffer.from(`%PDF-1.4 /Font burst ${i}\n%%EOF`), filename: `burst-${i}.pdf`,
     extractor: exOf({ ...f4, invoice_number: `NSC-9${String(i).padStart(3, '0')}` }), // same speed: all 20 reach the checks together
   }));
   const runs = await both(...ids);
@@ -458,7 +482,7 @@ test('review approve re-checks the current ledger: no paying twice, no going ove
   db.updateLedgerStatus('r_manual', 'rejected');
 
   // A second invoice for the whole PO is approved after the first was held: the first would now go over the PO.
-  const other = await runToEnd({ bytes: Buffer.from('%PDF-1.4 /Font kestrel-2'), filename: 'k2.pdf', extractor: exOf({ ...f7, invoice_number: 'KIS-24-0999' }) });
+  const other = await runToEnd({ bytes: Buffer.from('%PDF-1.4 /Font kestrel-2\n%%EOF'), filename: 'k2.pdf', extractor: exOf({ ...f7, invoice_number: 'KIS-24-0999' }) });
   assert.equal(other.decision, 'REVIEW');
   await review(other.id, ok);
   await assert.rejects(review(held.id, ok), (e) => e.status === 409 && /Since this invoice was put on hold.*PO-2026-0405/.test(e.message));

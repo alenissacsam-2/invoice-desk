@@ -7,6 +7,7 @@ import path from 'node:path';
 // Isolate the DB and pin the key/models before config.js reads the env.
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'extract-test-'));
 process.env.DB_PATH = path.join(tmp, 'app.db');
+process.env.SEED_DB = ''; // start empty, not from the committed data/seed.db
 process.env.GEMINI_API_KEY = 'test-key';
 process.env.GEMINI_MODEL = 'model-a';
 process.env.GEMINI_FALLBACK_MODEL = 'model-b';
@@ -18,7 +19,7 @@ const pdf = (body) => Buffer.from(`%PDF-1.4\n${body}\n%%EOF`, 'latin1');
 
 test('sniff: digital PDF with fonts and 2 pages', () => {
   const r = sniff(pdf('1 0 obj << /Type /Pages /Count 2 >> endobj 2 0 obj << /Type /Page /Resources << /Font << /F1 5 0 R >> >> >> endobj 3 0 obj <</Type/Page>> endobj'));
-  assert.deepEqual(r, { mime: 'application/pdf', pages: 2, hasTextLayer: true, kind: 'digital_text' });
+  assert.deepEqual(r, { mime: 'application/pdf', pages: 2, hasTextLayer: true, kind: 'digital_text', broken: null });
 });
 
 test('sniff: scanned PDF without fonts', () => {
@@ -26,6 +27,12 @@ test('sniff: scanned PDF without fonts', () => {
   assert.equal(r.pages, 1);
   assert.equal(r.hasTextLayer, false);
   assert.equal(r.kind, 'scanned_image');
+});
+
+test('sniff: truncated and encrypted PDFs are flagged', () => {
+  assert.equal(sniff(Buffer.from('%PDF-1.7\n1 0 obj << /Type /Catalog')).broken, 'corrupt');
+  assert.equal(sniff(Buffer.from('%PDF-1.7\n1 0 obj << /Type /Catalog\n%%EOF')).broken, null); // pages may hide in object streams
+  assert.equal(sniff(pdf('<</Type/Page>> trailer << /Encrypt 5 0 R >>')).broken, 'encrypted');
 });
 
 test('sniff: PNG, JPEG, junk', () => {

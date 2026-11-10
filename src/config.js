@@ -11,7 +11,7 @@ export const PORT = Number(process.env.PORT) || 3000;
 export const PATHS = {
   root,
   db: process.env.DB_PATH || path.join(root, 'var', 'app.db'),
-  seedDb: path.join(root, 'data', 'seed.db'),
+  seedDb: process.env.SEED_DB ?? path.join(root, 'data', 'seed.db'), // '' = start empty (tests)
   data: path.join(root, 'data'),
   samples: path.join(root, 'samples'),
   public: path.join(root, 'public'),

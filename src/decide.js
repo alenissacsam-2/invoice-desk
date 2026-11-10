@@ -40,6 +40,7 @@ export function labelFor(code, ex = {}, vendor = null) {
   return LABELS[code] ?? code;
 }
 const lc = (s) => (/^[A-Z][a-z]/.test(s) ? s[0].toLowerCase() + s.slice(1) : s); // "Price above PO" → "price above PO" mid-sentence
+const up = (s) => s[0].toUpperCase() + s.slice(1); // "invoice X" → "Invoice X" at the start of a subject
 
 const validDate = (s) => (s && addDays(s, 0) === s ? s : null); // "2026-11-31" → null
 /**
@@ -226,7 +227,7 @@ function draftEmail({ ex, vendor, po, reasons, decision, original, amt, named, i
   const has = (code) => reasons.some((r) => r.code === code);
   const holding = (code) => reasons.some((r) => r.code === code && r.severity === 'hold');
   if (has('VENDOR_BLOCKED') || has('NOT_AN_INVOICE')) return none;
-  const sign = `\n\nKind regards,\nAccounts Payable\n${po?.buyer_entity || ex.bill_to_name || ''}`.trimEnd();
+  const sign = '\n\nKind regards,\nAccounts Payable, Halden Robotics'; // never the extracted bill-to name (often all caps)
   const dated = ex.invoice_date ? ` dated ${fmtDate(ex.invoice_date)}` : '';
   const poRef = po?.po_number ?? ex.po_number;
   const hello = `Hello ${named ? `${named} team` : 'there'},\n\n`;
@@ -254,7 +255,7 @@ function draftEmail({ ex, vendor, po, reasons, decision, original, amt, named, i
     const orig = original?.invoice_number ?? ex.invoice_number;
     const status = original?.status === 'on_hold' ? 'is with our team for review' : 'is approved and scheduled for payment under your agreed terms';
     return { kind: 'courtesy', email: {
-      to: vendor.remit_email, subject: `Re: ${invRef} – already received`,
+      to: vendor.remit_email, subject: `${up(invRef)} — already processed`,
       body: `${hello}Thank you for the reminder about ${invRef} for ${amt}. We already have this invoice on file${orig !== ex.invoice_number ? ` as ${orig}` : ''}, and it ${status}.\n\nThere is no need to send it again; we will not pay it twice.${sign}`,
     } };
   }
@@ -271,7 +272,7 @@ function draftEmail({ ex, vendor, po, reasons, decision, original, amt, named, i
   if (holding('QTY_EXCEEDS_RECEIPT') && vendor && !has('POSSIBLE_DUPLICATE')) {
     const lines = reasons.filter((r) => r.code === 'QTY_EXCEEDS_RECEIPT').map((r) => `- ${r.message}`).join('\n');
     return { kind: 'receipt', email: {
-      to, subject: `${invRef}: quantities billed exceed goods received${poRef ? ` on ${poRef}` : ''}`,
+      to, subject: `${up(invRef)}: quantities billed exceed goods received${poRef ? ` on ${poRef}` : ''}`,
       body: `${hello}Thank you for ${invRef}${dated} for ${amt}. Our receiving records do not yet show all of the goods billed:\n${lines}\n\n`
         + `If these items have shipped, please send the delivery note or tracking details so our receiving team can check. Otherwise, please send a credit note for the difference, or re-bill for the quantities we have received.${sign}`,
     } };

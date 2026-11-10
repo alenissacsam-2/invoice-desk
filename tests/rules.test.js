@@ -122,7 +122,8 @@ test(`demo sequence over the ${Object.keys(EXPECT).length} sample fixtures`, asy
     const r6 = out['06_acme_duplicate_resend'];
     assert.equal(r6.dup.original.run_id, '01');
     assert.match(r6.result.headline, /^Reject/);
-    assert.match(r6.result.vendorEmail.subject, /already received/);
+    assert.match(r6.result.vendorEmail.subject, /^Invoice ACM-INV-\S+ — already processed$/);
+    assert.match(r6.result.vendorEmail.body, /Kind regards,\nAccounts Payable, Halden Robotics$/);
 
     const r7 = out['07_kestrel_bank_change'];
     assert.equal(r7.result.vendorEmail.to, 'ap@kestrelsupply.com');
@@ -526,4 +527,13 @@ test('price variance that fully explains the header overrun is reported once', (
   const both = run(inv({ line_items: [{ description: 'Blue widget', item_code: 'WID-1', quantity: 1, unit_price: 110, amount: 110 },
     { description: 'Rush fee', item_code: null, quantity: 1, unit_price: 50, amount: 50 }], subtotal: 160, total: 160 }), [], { m: world() });
   assert.ok(both.codes.includes('PRICE_VARIANCE') && both.codes.includes('PO_OVERRUN'), both.codes.join());
+});
+
+test('dates vs printed Net terms: misread or backwards dates hold for the AP clerk', () => {
+  const lc = (o) => validate(inv(o), { today: TODAY }).reasons.filter((r) => r.code === 'LOW_CONFIDENCE');
+  assert.equal(lc({ invoice_date: '2026-10-01', due_date: '2026-10-31', payment_terms: 'Net 30' }).length, 0);
+  assert.equal(lc({ invoice_date: '2026-10-01', due_date: '2026-10-19', payment_terms: 'net 15 days' }).length, 0); // within 3 days
+  assert.equal(lc({ invoice_date: '2026-10-01', due_date: '2026-10-20', payment_terms: 'net 15 days' }).length, 1);
+  assert.equal(lc({ invoice_date: '2026-10-01', due_date: '2026-10-05', payment_terms: 'Payment due within 15 days' }).length, 0); // no Net N
+  assert.match(lc({ invoice_date: '2026-10-05', due_date: '2026-10-01', payment_terms: null })[0].message, /due date is before the invoice date/);
 });

@@ -180,6 +180,14 @@ async function execute({ id, buf, sn, sha, fresh, extractor, stages, retryOf, lo
         headline: "Couldn't read the document: this file isn't a PDF or image — upload a PDF, PNG or JPEG.",
         nextActions: ['Upload the invoice as a PDF, PNG or JPEG.'] };
     }
+    if (sn.broken) {
+      const enc = sn.broken === 'encrypted';
+      return { status: 'failed', fatal: true, summary: `Couldn't open this PDF: ${enc ? 'password-protected' : 'damaged or incomplete'}`, data,
+        error: `PDF is ${sn.broken}`, errorKind: 'unreadable_file',
+        checks: [{ label: 'File opens', status: 'fail', detail: enc ? 'Encrypted (password-protected) PDF' : 'No pages and no end-of-file marker' }],
+        headline: `Couldn't open this file — ${enc ? 'it is password-protected' : 'it may be corrupt or password-protected'}. Ask the vendor for a new copy.`,
+        nextActions: ['Ask the vendor for a new copy of the invoice (not password-protected).', 'Upload the new copy, or process this invoice by hand.'] };
+    }
     const isPdf = sn.mime === 'application/pdf';
     // "PDF, 1 page, scanned" / "JPEG image (photo)"; size and hash are in the checks.
     const what = isPdf ? `PDF, ${plural(sn.pages, 'page')}, ${sn.kind === 'digital_text' ? 'digital' : 'scanned'}`
@@ -423,7 +431,7 @@ function reviewNow(id, { action, reviewer, note, callbackVerified }) {
   if (why.length < 3) throw httpError(400, 'Add a short note (at least 3 characters) saying why.');
   const risky = (run.result?.reasons ?? []).find((r) => CALLBACK_CODES.includes(r.code));
   if (action === 'approve' && risky && callbackVerified !== true) {
-    throw httpError(400, `Before approving, call the vendor on the phone number in our vendor master (never the one on the invoice) to confirm ${risky.code === 'BANK_DETAILS_CHANGED' ? 'the bank change' : 'the invoice is genuine'}, then tick "Call-back verified".`);
+    throw httpError(400, `Before approving, call the vendor on the phone number in our vendor master (never the one on the invoice) to confirm ${risky.code === 'BANK_DETAILS_CHANGED' ? 'the bank change' : 'the invoice is genuine'}, then tick the call-back confirmation.`);
   }
 
   const ex = run.extraction ?? {};

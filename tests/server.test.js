@@ -8,6 +8,7 @@ import path from 'node:path';
 // In-process server on an ephemeral port: temp DB, no Gemini key, a stub extractor that serves the fixtures.
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'server-test-'));
 process.env.DB_PATH = path.join(tmp, 'app.db');
+process.env.SEED_DB = ''; // start empty, not from the committed data/seed.db
 process.env.APP_TODAY ??= '2026-11-10';
 process.env.PIPELINE_DELAY = '0';
 process.env.GEMINI_API_KEY = '';
@@ -156,7 +157,7 @@ test('a cached reading with no recorded read time reports null, and the median i
 
 test('per-IP rate limit: 30 Gemini-costing runs an hour; cached samples stay free', async () => {
   const ip = freshIp();
-  const unique = (i) => Buffer.from(`%PDF-1.4 /Font rate-limit-${ip}-${i}`); // never cached, so each needs a read
+  const unique = (i) => Buffer.from(`%PDF-1.4 /Font rate-limit-${ip}-${i}\n%%EOF`); // never cached, so each needs a read
   for (let i = 0; i < LIMITS.runsPerIpPerHour; i++) assert.equal((await api('/api/runs', { method: 'POST', ip, body: unique(i) })).status, 202);
   const r = await api('/api/runs', { method: 'POST', ip, body: unique('over') });
   assert.equal(r.status, 429);
@@ -179,7 +180,7 @@ test('daily Gemini cap: new files and fresh reads get 429, cached samples still 
   const cap = LIMITS.geminiDailyCap;
   LIMITS.geminiDailyCap = 0;
   try {
-    const up = await api('/api/runs', { method: 'POST', ip: freshIp(), body: Buffer.from('%PDF-1.4 /Font never seen') });
+    const up = await api('/api/runs', { method: 'POST', ip: freshIp(), body: Buffer.from('%PDF-1.4 /Font never seen\n%%EOF') });
     assert.equal(up.status, 429);
     assert.equal(up.body.error, 'Daily AI reading limit reached for this demo — samples still work from cache');
     assert.equal((await api('/api/runs?sample=02_brightline_fuel_surcharge.pdf&fresh=1', { method: 'POST', ip: freshIp() })).status, 429);
@@ -193,7 +194,7 @@ test('many live viewers of one run; a reset sends `reset` and closes every strea
   const warnings = [];
   const onWarn = (w) => warnings.push(w);
   process.on('warning', onWarn);
-  const bytes = Buffer.from('%PDF-1.4 /Font held for sse');
+  const bytes = Buffer.from('%PDF-1.4 /Font held for sse\n%%EOF');
   let release;
   gates.set(sha256(bytes), new Promise((r) => (release = r)));
   try {

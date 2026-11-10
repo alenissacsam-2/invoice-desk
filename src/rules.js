@@ -264,8 +264,20 @@ export function validate(ex, { today } = {}) {
       s.check('Invoice date within a year', 'fail', `${daysBetween(d, today)} days old`);
       s.reason('DATE_OUT_OF_RANGE', 'hold', `The invoice is dated ${fmtDate(d)}, ${daysBetween(d, today)} days ago, which is past our ${TOL.maxAgeDays}-day limit.`);
     } else s.check('Invoice date in range', 'pass', today ? `${d} (${daysBetween(d, today)} days ago)` : d);
-    if (ex.due_date && parseDate(ex.due_date) !== null && parseDate(d) !== null && daysBetween(d, ex.due_date) < 0)
-      s.check('Due date after invoice date', 'warn', `Due ${ex.due_date} is before the invoice date ${d}`);
+    // A due date that contradicts the printed terms (or precedes the invoice) usually means a day/month misread.
+    if (ex.due_date && parseDate(ex.due_date) !== null && parseDate(d) !== null) {
+      const gap = daysBetween(d, ex.due_date);
+      const netN = Number(String(ex.payment_terms ?? '').match(/\bnet\s*(\d{1,3})\b/i)?.[1] ?? NaN);
+      const dates = `Invoice date ${fmtDate(d)} and due date ${fmtDate(ex.due_date)}`;
+      const check = 'the date may have been misread (5/11 vs 11/5). Check the document.';
+      if (gap < 0) {
+        s.check('Dates fit payment terms', 'fail', `Due ${ex.due_date} is before the invoice date ${d}`);
+        s.reason('LOW_CONFIDENCE', 'hold', `${dates}: the due date is before the invoice date — ${check}`);
+      } else if (Number.isFinite(netN) && Math.abs(gap - netN) > 3) {
+        s.check('Dates fit payment terms', 'fail', `${gap} days apart, terms say Net ${netN}`);
+        s.reason('LOW_CONFIDENCE', 'hold', `${dates} don't fit the printed Net ${netN} terms — ${check}`);
+      } else if (Number.isFinite(netN)) s.check('Dates fit payment terms', 'pass', `${gap} days apart, Net ${netN}`);
+    }
   }
   if (ex.due_date && parseDate(ex.due_date) === null)
     s.check('Due date is valid', 'warn', `"${ex.due_date}" is not a real calendar date; we use the invoice date plus the vendor's terms`);

@@ -89,7 +89,7 @@ test('D2 duplicate resend with new bank details: still a reject, but Treasury se
   assert.equal(r.result.route, 'Treasury & Security', `route ${r.result.route}`);
   assert.match(r.result.explanation, /First Coastal Bank/);
   assert.ok(r.result.nextActions.some((a) => a.startsWith('Call Acme Office Supplies LLC on (510) 555-0142')), r.result.nextActions.join(' | '));
-  assert.ok(!r.result.nextActions.some((a) => /courtesy note/.test(a)) || /already received/.test(r.result.vendorEmail.subject), 'action says courtesy note; draft is a bank-change email');
+  assert.ok(!r.result.nextActions.some((a) => /courtesy note/.test(a)) || /already processed/.test(r.result.vendorEmail.subject), 'action says courtesy note; draft is a bank-change email');
   // A lookalike address on the resend: the courtesy note still goes to the master address only.
   const look = run(F('06_acme_duplicate_resend', (e) => { e.vendor.email = 'ar@acmeofficesupp1y.com'; }), acmeApproved());
   assert.equal(look.result.route, 'Treasury & Security');
@@ -186,9 +186,9 @@ test('D10 name of a blocked vendor + tax ID of another vendor is not silently ap
 
 test('D11 printed due date shorter than contract terms does not pull payment forward', () => {
   // invoice 2026-10-28, master Net 30 → 2026-11-27; invoice prints "due 2026-11-04".
-  assert.equal(run(F('01_acme_happy', (e) => { e.due_date = '2026-11-04'; })).result.payment.scheduledFor, '2026-11-27');
+  assert.equal(run(F('01_acme_happy', (e) => { e.due_date = '2026-11-04'; e.payment_terms = null; })).result.payment.scheduledFor, '2026-11-27');
   // A later printed date is kept.
-  assert.equal(run(F('01_acme_happy', (e) => { e.due_date = '2026-12-05'; })).result.payment.scheduledFor, '2026-12-05');
+  assert.equal(run(F('01_acme_happy', (e) => { e.due_date = '2026-12-05'; e.payment_terms = null; })).result.payment.scheduledFor, '2026-12-05');
 });
 
 // ---------- robustness ----------
@@ -289,7 +289,7 @@ test('ok: boundaries and normal phrases', () => {
   assert.equal(R.isLookalikeDomain('billing.acmeofficesupply.com', 'acmeofficesupply.com'), false);
   for (const a of ['4411-2233-44', '4411 2233 44', '****3344', 'Acct #4411223344']) assert.equal(s(run(F('01_acme_happy', (e) => { e.bank_details.account_number = a; }))).decision, 'APPROVE', a);
   assert.equal(s(run(F('02_brightline_fuel_surcharge', (e) => { e.tax_lines[0].rate_pct = 0; }))).decision, 'APPROVE');
-  assert.equal(s(run(F('01_acme_happy', (e) => { e.invoice_date = '2026-11-11'; }))).decision, 'APPROVE');
+  assert.equal(s(run(F('01_acme_happy', (e) => { e.invoice_date = '2026-11-11'; e.due_date = '2026-12-11'; }))).decision, 'APPROVE');
   assert.equal(s(run(F('01_acme_happy', (e) => { e.invoice_date = '2025-11-09'; }))).primary, 'DATE_OUT_OF_RANGE');
   assert.equal(s(run(F('01_acme_happy', (e) => { e.po_number = 'PO-2026-0301'; }))).primary, 'PO_CLOSED');
   assert.equal(s(run(F('03_peakvalley_scanned_no_po', (e) => { e.po_number = 'PO-2026-0301'; }))).primary, 'PO_VENDOR_MISMATCH');
@@ -393,7 +393,7 @@ test('decide() invariants over generated scenarios', () => {
     // Treasury cases never email an address that is not in the vendor master.
     if (r.vendorEmail && treasury && !master.vendors.some((x) => x.remit_email === r.vendorEmail.to)) bad(name, `Treasury case email to non-master address ${r.vendorEmail.to}`);
     // Next actions only mention emails that were drafted.
-    if (r.nextActions.some((a) => /courtesy note/.test(a)) && !/already received/.test(r.vendorEmail?.subject ?? '')) bad(name, `courtesy note action, email "${r.vendorEmail?.subject ?? 'none'}"`);
+    if (r.nextActions.some((a) => /courtesy note/.test(a)) && !/already processed/.test(r.vendorEmail?.subject ?? '')) bad(name, `courtesy note action, email "${r.vendorEmail?.subject ?? 'none'}"`);
     if (r.nextActions.some((a) => /drafted email asking for a credit note/.test(a)) && !/exceed goods received/.test(r.vendorEmail?.subject ?? '')) bad(name, `receipt email action, email "${r.vendorEmail?.subject ?? 'none'}"`);
     if (r.nextActions.some((a) => /drafted email asking the vendor for a corrected/.test(a)) && !/Corrected (invoice|credit note) needed/.test(r.vendorEmail?.subject ?? '')) bad(name, `corrected-invoice action, email "${r.vendorEmail?.subject ?? 'none'}"`);
   }
