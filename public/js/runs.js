@@ -84,7 +84,7 @@ function overview(s, runs) {
       ${cell('Awaiting a person', awaiting, by.REVIEW ? `${signedOff} of ${by.REVIEW} held signed off` : 'Nothing held', ['warn', 'review'])}
       ${cell('Returned or rejected', rejected, by.REJECT || byPerson ? `${by.REJECT || 0} by the rules · ${byPerson} by a reviewer` : 'Nothing rejected', ['fail', 'reject'])}
       ${cell('Value approved', first ? money(first[1], first[0]) : money(0, 'USD'), rest.length ? `+ ${rest.map(([c, v]) => money(v, c)).join(' · ')}` : 'Scheduled for payment')}
-      ${cell('Median read time', s.medianReadMs != null ? dur(s.medianReadMs) : '—', s.medianMs != null ? `AI read; the rules take ${dur(s.medianMs)}` : 'AI extraction')}
+      ${cell('Median read time', s.medianReadMs != null ? dur(s.medianReadMs) : '—', s.medianMs != null ? `AI read · whole run ${dur(s.medianMs)}` : 'AI extraction')}
     </dl>
     ${reasons.length ? html`<section class="exceptions" aria-labelledby="exc-title">
       <div class="exc-head"><h3 class="form-h" id="exc-title">Exceptions this batch</h3>
