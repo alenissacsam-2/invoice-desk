@@ -5,7 +5,8 @@
 2. Switch the theme to **light**: the sun icon, top right. Light records more clearly, and the canary and pink copies show best.
 3. Press **Reset demo**. The register empties, and the sample inbox shows "expects …" again.
 4. Optional rehearsal: run all ten once, then Reset. Each file's reading stays cached, so every click during the recording comes back in seconds even if Gemini is busy. The slip says "Cached read" when that happens. If someone asks, say so plainly: it's the same file read earlier, and any new upload is read live.
-5. Browser at 1440×900 or larger, zoom 100%. Close other tabs. Use Loom or OBS, with your own voice.
+5. Clicking a sample that already ran **replays** it: the earlier slip is set aside, so it decides afresh instead of being caught as a duplicate of itself. Uploads, and different files such as the 06 resend, still go through full duplicate detection. Reset demo is only needed if you want an empty register.
+6. Browser at 1440×900 or larger, zoom 100%. Close other tabs. Use Loom or OBS, with your own voice.
 
 Talk to an AP manager, not an engineer. These are talking points, not lines to read word for word.
 

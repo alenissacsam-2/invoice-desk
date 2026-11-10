@@ -86,6 +86,16 @@ export function startRun({ bytes, mime, filename, source = 'upload', fresh = fal
     id, created_at: iso(), filename: filename || 'upload', file_sha: sha, mime: sn.mime || mime || 'application/octet-stream',
     bytes: buf, source, status: 'running', stages, retry_of: retryOf,
   });
+  // Demo replay: running a sample again supersedes its earlier runs (and their ledger rows), so the replay decides
+  // fresh instead of being caught as a duplicate of itself. Uploads keep full duplicate detection.
+  if (source === 'sample' && !retryOf) {
+    for (const r of db.listRuns()) {
+      if (r.id === id || r.source !== 'sample' || r.filename !== filename || r.superseded_by) continue;
+      db.updateRun(r.id, { superseded_by: id });
+      db.updateLedgerStatus(r.id, 'superseded');
+      emit(r.id, 'run', summarize(db.getRun(r.id)));
+    }
+  }
   const lock = { release: null };
   execute({ id, buf, sn, sha, fresh, extractor, stages, retryOf, lock }).catch((e) => console.error(`run ${id}:`, e)).finally(() => lock.release?.());
   return id;
@@ -381,8 +391,10 @@ async function execute({ id, buf, sn, sha, fresh, extractor, stages, retryOf, lo
   out = await runStage('decision', () => {
     result = decide({ ex, vendor: mv?.vendor ?? null, po: mp?.po ?? null, reasons, today: TODAY, inferred: mp?.inferred ?? false,
       original: dup?.original ?? cn?.original ?? null, sameFile: dup?.sameFile ?? false });
-    const status = { APPROVE: 'approved', REVIEW: 'on_hold' }[result.decision];
-    if (status && db.getRun(id)) { // no row: reset while running
+    const self = db.getRun(id);
+    // A run replayed while still in flight must not book anything: its replacement decides instead.
+    const status = self?.superseded_by ? 'superseded' : { APPROVE: 'approved', REVIEW: 'on_hold' }[result.decision];
+    if (status && self) { // no row: reset while running
       db.insertLedger({
         run_id: id, vendor_id: mv?.vendor?.vendor_id ?? null, invoice_number: ex.invoice_number, invoice_number_norm: normalizeInvoiceNumber(ex.invoice_number),
         invoice_date: ex.invoice_date, net: signed(ex, mp?.net ?? invoiceTotals(ex).net), total: signed(ex, ex.total), currency: ex.currency,

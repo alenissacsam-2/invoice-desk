@@ -138,8 +138,8 @@ function renderSamples() {
     const tags = Array.isArray(s.tags) ? s.tags : [];
     const p = s.processed && typeof s.processed === 'object' ? s.processed : null;
     const shown = p ? p.final_decision || p.decision : null;
-    // Approved or held invoices sit in the ledger, so the same invoice again is a duplicate.
-    const dupHint = p && ['APPROVE', 'REVIEW'].includes(shown) ? 'Running it again will be caught as a duplicate' : '';
+    // Clicking a processed sample replays it: the server sets the earlier slip aside, so it decides afresh.
+    const dupHint = p ? 'Run it again to replay it; the earlier slip is set aside' : '';
     const isCur = s.file === curFile;
     return html`<li><button type="button" class="paper" data-file="${s.file}" ${isCur ? raw('aria-current="true"') : ''} ${starting ? raw('aria-disabled="true"') : ''} title="${[s.title || s.file, dupHint].filter(Boolean).join(' · ')}">
       <span class="paper-no">${sampleNo(s.file)}</span>

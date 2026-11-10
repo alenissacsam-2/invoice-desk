@@ -184,7 +184,7 @@ test(`the ${manifest.length} samples in manifest order`, async (t) => {
   });
 
   await t.test('same file again: one DUPLICATE_INVOICE reason, worded without repeating the number, and no email', async () => {
-    const run = await sampleRun('01_acme_happy.pdf');
+    const run = await sampleRun('01_acme_happy.pdf', { source: 'upload' }); // an upload of the same file: a sample click would replay instead
     assert.equal(stage(run, 'intake').data.seenBefore, runs['01_acme_happy.pdf'].id);
     assert.ok(codes(run).includes('DUPLICATE_INVOICE'));
     assert.ok(!codes(run).includes('DUPLICATE_FILE'), 'DUPLICATE_FILE is folded into DUPLICATE_INVOICE');
@@ -432,7 +432,7 @@ const both = (...ids) => Promise.all(ids.map(waitRun));
 
 test('concurrent runs see each other: the same invoice twice at once is approved once', async () => {
   resetAll();
-  const [a, b] = await both(...['01_acme_happy.pdf', '01_acme_happy.pdf'].map((f) => startSample(f)));
+  const [a, b] = await both(...['01_acme_happy.pdf', '01_acme_happy.pdf'].map((f) => startSample(f, { source: 'upload' })));
   assert.deepEqual([a.decision, b.decision].sort(), ['APPROVE', 'REJECT']);
   assert.ok(codes([a, b].find((r) => r.decision === 'REJECT')).includes('DUPLICATE_INVOICE'));
   assert.equal(db.getLedger().filter((l) => l.status === 'approved').length, 1);
@@ -532,4 +532,26 @@ test('only the newest runs are kept; runs the ledger points at lose their file i
   assert.ok(ids.includes('r_old0') && !ids.includes('r_old1') && ids.includes('r_old5'));
   assert.equal(db.getRunFile('r_old0').bytes, null);
   assert.ok(db.getRunFile('r_old304').bytes);
+});
+
+test('replaying a sample supersedes its earlier run instead of rejecting it as a duplicate', async () => {
+  resetAll();
+  const first = await waitRun(startSample('01_acme_happy.pdf'));
+  assert.equal(first.decision, 'APPROVE');
+  const replay = await waitRun(startSample('01_acme_happy.pdf'));
+  assert.equal(replay.decision, 'APPROVE', 'a replay decides fresh');
+  assert.equal(db.getRun(first.id).superseded_by, replay.id);
+  assert.deepEqual(db.getLedger().map((l) => [l.run_id, l.status]).sort(), [[first.id, 'superseded'], [replay.id, 'approved']].sort());
+  const resend = await waitRun(startSample('06_acme_duplicate_resend.pdf'));
+  assert.equal(resend.decision, 'REJECT', 'a different file (the vendor resend) is still caught as a duplicate');
+  const upload = await waitRun(startSample('01_acme_happy.pdf', { source: 'upload' }));
+  assert.equal(upload.decision, 'REJECT', 'uploads keep full duplicate detection');
+});
+
+test('two clicks on the same sample at once: only the later one books anything', async () => {
+  resetAll();
+  const [a, b] = await both(startSample('04_northstar_split_1of2.pdf'), startSample('04_northstar_split_1of2.pdf'));
+  const live = [a, b].filter((r) => !db.getRun(r.id).superseded_by);
+  assert.equal(live.length, 1);
+  assert.equal(db.getLedger().filter((l) => l.status === 'approved').length, 1);
 });
