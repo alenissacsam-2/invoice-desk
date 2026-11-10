@@ -1,0 +1,5 @@
+reportlab==5.1.0
+Pillow==13.0.0
+# verification only (text extraction, page rendering)
+pypdf==7.0.1
+pypdfium2==5.15.2

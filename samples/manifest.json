@@ -1,0 +1,140 @@
+[
+  {
+    "file": "01_acme_happy.pdf",
+    "title": "Acme: clean office supplies invoice",
+    "vendor": "Acme Office Supplies LLC",
+    "scenario": "A clean digital invoice that quotes its PO and matches the order and goods receipt exactly.",
+    "expected": "APPROVE",
+    "expectedCodes": [],
+    "tags": [
+      "happy path",
+      "digital",
+      "3-way match"
+    ],
+    "runAfter": null
+  },
+  {
+    "file": "02_brightline_fuel_surcharge.pdf",
+    "title": "Brightline: freight with fuel surcharge",
+    "vendor": "Brightline Logistics Inc",
+    "scenario": "A freight services invoice that adds an unplanned 1.5% fuel surcharge, small enough to stay within tolerance.",
+    "expected": "APPROVE",
+    "expectedCodes": [
+      "VARIANCE_WITHIN_TOLERANCE"
+    ],
+    "tags": [
+      "services",
+      "2-way match",
+      "tolerance"
+    ],
+    "runAfter": null
+  },
+  {
+    "file": "03_peakvalley_scanned_no_po.pdf",
+    "title": "Peak Valley: scanned, no PO",
+    "vendor": "Peak Valley Janitorial",
+    "scenario": "A crooked scanned cleaning invoice with no PO number, where the PO has to be inferred from the vendor's open orders.",
+    "expected": "APPROVE",
+    "expectedCodes": [
+      "PO_INFERRED"
+    ],
+    "tags": [
+      "scanned",
+      "no PO",
+      "PO inference",
+      "edge case"
+    ],
+    "runAfter": null
+  },
+  {
+    "file": "04_northstar_split_1of2.pdf",
+    "title": "Northstar: partial invoice 1 of 2",
+    "vendor": "Northstar Computers Inc",
+    "scenario": "The first partial invoice for laptops and docks, billing exactly what has been received so far.",
+    "expected": "APPROVE",
+    "expectedCodes": [],
+    "tags": [
+      "split delivery",
+      "3-way match"
+    ],
+    "runAfter": null
+  },
+  {
+    "file": "05_northstar_split_2of2.pdf",
+    "title": "Northstar: partial invoice 2 of 2",
+    "vendor": "Northstar Computers Inc",
+    "scenario": "The second partial invoice bills 4 laptops and 4 docks, but only 2 more laptops and no more docks have arrived.",
+    "expected": "REVIEW",
+    "expectedCodes": [
+      "QTY_EXCEEDS_RECEIPT"
+    ],
+    "tags": [
+      "split delivery",
+      "3-way match",
+      "edge case"
+    ],
+    "runAfter": "04_northstar_split_1of2.pdf"
+  },
+  {
+    "file": "06_acme_duplicate_resend.pdf",
+    "title": "Acme: payment-reminder copy",
+    "vendor": "Acme Office Supplies LLC",
+    "scenario": "The vendor's AR system re-sends invoice 1 as a payment-reminder copy with a new layout and the number written differently.",
+    "expected": "REJECT",
+    "expectedCodes": [
+      "DUPLICATE_INVOICE"
+    ],
+    "tags": [
+      "duplicate",
+      "edge case"
+    ],
+    "runAfter": "01_acme_happy.pdf"
+  },
+  {
+    "file": "07_kestrel_bank_change.pdf",
+    "title": "Kestrel: bank details changed",
+    "vendor": "Kestrel Industrial Supply",
+    "scenario": "An invoice that matches its PO perfectly but asks for payment to a new bank account via a lookalike email domain.",
+    "expected": "REVIEW",
+    "expectedCodes": [
+      "BANK_DETAILS_CHANGED"
+    ],
+    "tags": [
+      "fraud",
+      "bank change",
+      "edge case"
+    ],
+    "runAfter": null
+  },
+  {
+    "file": "08_lumen_missing_fields.pdf",
+    "title": "Lumen: no invoice number or date",
+    "vendor": "Lumen Print & Signage",
+    "scenario": "A design-shop invoice that quotes its PO but leaves out the invoice number and the invoice date.",
+    "expected": "REVIEW",
+    "expectedCodes": [
+      "MISSING_FIELD"
+    ],
+    "tags": [
+      "missing fields",
+      "vendor email",
+      "edge case"
+    ],
+    "runAfter": null
+  },
+  {
+    "file": "09_sharma_gst_inr.pdf",
+    "title": "Sharma: India GST tax invoice",
+    "vendor": "Sharma Electricals Pvt Ltd",
+    "scenario": "An Indian tax invoice in rupees with CGST and SGST split, HSN codes and Indian digit grouping.",
+    "expected": "APPROVE",
+    "expectedCodes": [],
+    "tags": [
+      "India",
+      "GST",
+      "INR",
+      "multi-currency"
+    ],
+    "runAfter": null
+  }
+]
