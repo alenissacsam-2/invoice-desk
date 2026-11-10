@@ -4,3 +4,5 @@ var/
 *.log
 scripts/.venv/
 __pycache__/
+.impeccable/questions/
+.impeccable/direction*.json
