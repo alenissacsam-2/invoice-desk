@@ -154,14 +154,17 @@ test('a cached reading with no recorded read time reports null, and the median i
   assert.equal((await api('/api/stats')).body.medianReadMs, null);
 });
 
-test('per-IP rate limit on new runs: 30 an hour', async () => {
+test('per-IP rate limit: 30 Gemini-costing runs an hour; cached samples stay free', async () => {
   const ip = freshIp();
-  for (let i = 0; i < LIMITS.runsPerIpPerHour; i++) assert.equal((await api('/api/runs', { method: 'POST', ip })).status, 400); // empty body, but it counts
-  const r = await api('/api/runs?sample=01_acme_happy.pdf', { method: 'POST', ip });
+  const unique = (i) => Buffer.from(`%PDF-1.4 /Font rate-limit-${ip}-${i}`); // never cached, so each needs a read
+  for (let i = 0; i < LIMITS.runsPerIpPerHour; i++) assert.equal((await api('/api/runs', { method: 'POST', ip, body: unique(i) })).status, 202);
+  const r = await api('/api/runs', { method: 'POST', ip, body: unique('over') });
   assert.equal(r.status, 429);
   assert.match(r.body.error, /30 an hour/);
   assert.equal((await api('/api/runs/x/retry', { method: 'POST', ip })).status, 429);
-  assert.equal((await api('/api/runs', { method: 'POST', ip: freshIp() })).status, 400, 'other clients are not affected');
+  await sample('03_peakvalley_scanned_no_po.pdf'); // warm the cache
+  assert.equal((await api('/api/runs?sample=03_peakvalley_scanned_no_po.pdf', { method: 'POST', ip })).status, 202, 'cached samples are not limited');
+  assert.equal((await api('/api/runs', { method: 'POST', ip: freshIp(), body: unique('other') })).status, 202, 'other clients are not affected');
 });
 
 test('reset: at most once every 30 s per client', async () => {

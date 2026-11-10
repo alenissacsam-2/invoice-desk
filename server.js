@@ -103,7 +103,6 @@ const runOr404 = (id) => getRun(id) ?? (() => { throw httpError(404, 'Run not fo
 const allRuns = () => listRuns().map((r) => getRun(r.id));
 
 async function createRun(req, res, m, url, opts) {
-  rateLimit(req);
   const fresh = url.searchParams.get('fresh') === '1';
   const sample = url.searchParams.get('sample');
   let run;
@@ -122,7 +121,8 @@ async function createRun(req, res, m, url, opts) {
     run = { bytes, mime, filename: path.basename(filename).slice(0, 200) || 'upload', source: 'upload' };
   }
   const needsGemini = fresh || !getCachedExtraction(sha256(run.bytes));
-  if (needsGemini) checkGemini();
+  // Only runs that cost a Gemini read are rate-limited; cached samples are free, so demos can be rehearsed.
+  if (needsGemini) { rateLimit(req); checkGemini(); }
   const id = startRun({ ...run, fresh, ...(opts.extractor && { extractor: opts.extractor }) });
   if (needsGemini) gemini.used++;
   json(res, 202, { id });
