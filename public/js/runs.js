@@ -6,7 +6,7 @@ const FILTERS = [
   ['APPROVE', 'Approved', (r) => r.decision === 'APPROVE'],
   ['REVIEW', 'Review', (r) => r.decision === 'REVIEW'],
   ['REJECT', 'Rejected', (r) => r.decision === 'REJECT'],
-  ['awaiting', 'Awaiting human', (r) => r.decision === 'REVIEW' && !r.review],
+  ['awaiting', 'Awaiting human', (r) => r.decision === 'REVIEW' && !reviewOf(r)],
 ];
 
 let root = null;
@@ -40,7 +40,12 @@ async function load() {
 
 const vendorOf = (r) => r.vendor_name || r.vendor?.name || r.vendor_id || 'Unknown vendor';
 const routeOf = (r) => r.route ?? r.result?.route ?? null;
-const reasonOf = (r) => r.main_reason ?? (r.result?.reasons || []).find((x) => x.severity !== 'info') ?? null;
+// List rows may carry the main reason as an object ({code,severity,message}) or as a plain message string.
+const reasonOf = (r) => {
+  const m = r.main_reason ?? r.mainReason ?? (r.result?.reasons || []).find((x) => x.severity !== 'info') ?? null;
+  return typeof m === 'string' ? { code: null, message: m, severity: r.decision === 'REJECT' ? 'block' : 'hold' } : m;
+};
+const reviewOf = (r) => (typeof r.review === 'string' ? { action: r.review } : r.review || null);
 
 function render() {
   const { runs, stats } = last;
@@ -99,7 +104,7 @@ function table(runs) {
 function row(r) {
   const reason = reasonOf(r);
   const sv = reason ? SEVERITY[reason.severity] || SEVERITY.hold : null;
-  const rv = r.review;
+  const rv = reviewOf(r);
   return html`<tr class="run-row">
     <td class="mono muted nowrap" title="${stamp(r.created_at)}">${ago(r.created_at)}</td>
     <td class="cell-vendor"><a class="row-link" href="#/run/${encodeURIComponent(r.id)}" data-fk="row-${r.id}">${vendorOf(r)}</a><span class="cell-file mono" title="${r.filename}">${r.filename || ''}</span></td>
@@ -108,7 +113,7 @@ function row(r) {
     <td class="mono nowrap">${r.po_number || html`<span class="muted">—</span>`}${r.po_inferred ? html`<span class="inferred" title="PO inferred from lines and amount">inferred</span>` : ''}</td>
     <td class="nowrap">${decisionChip(r.decision, r.status)}${rv ? html`<span class="reviewed-line tone-text t-${rv.action === 'approve' ? 'approve' : 'reject'}">→ ${rv.action === 'approve' ? 'Approved' : 'Rejected'} by reviewer</span>` : ''}</td>
     <td class="nowrap">${routeOf(r) || html`<span class="muted">—</span>`}</td>
-    <td>${reason ? html`<span class="code tone-text t-${sv.tone}" title="${reason.message || ''}">${reason.code}</span>` : html`<span class="muted">—</span>`}</td>
+    <td>${!reason ? html`<span class="muted">—</span>` : reason.code ? html`<span class="code tone-text t-${sv.tone}" title="${reason.message || ''}">${reason.code}</span>` : html`<span class="reason-text" title="${reason.message}">${reason.message}</span>`}</td>
     <td class="num muted">${r.status === 'running' ? '' : dur(r.ms)}</td>
   </tr>`;
 }
