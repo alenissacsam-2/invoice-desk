@@ -713,6 +713,7 @@ main:focus-visible, .data-section:focus-visible { outline: none; }
 .row-toggle .chev { display: grid; color: var(--form); transition: transform .14s ease-out; }
 .row-toggle[aria-expanded="true"] .chev { transform: rotate(90deg); }
 .bar-col { width: 130px; }
+@media (max-width: 1359px) { .bar-col { display: none; } } /* Remaining already says it; the bar only fits on wide screens */
 .po-tbl > tbody > tr:nth-last-child(2):has(+ tr[hidden]) > td { border-bottom: 0; }
 .sub-row > td { background: color-mix(in srgb, var(--form) 4%, transparent); padding: 4px 12px 10px 26px !important; }
 .tbl.inner { font-size: 12.5px; }
