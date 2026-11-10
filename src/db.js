@@ -137,7 +137,11 @@ export function listRuns({ decision } = {}) {
   return d.prepare(sql).all(...(decision ? [decision] : [])).map(plain);
 }
 
-export function insertLedger(row) { insert('ledger', row.lines && typeof row.lines !== 'string' ? { ...row, lines: JSON.stringify(row.lines) } : row); }
+const cents = (n) => (typeof n === 'number' ? Math.round(n * 100) / 100 : n);
+export function insertLedger(row) {
+  row = { ...row, net: cents(row.net), total: cents(row.total) };
+  insert('ledger', row.lines && typeof row.lines !== 'string' ? { ...row, lines: JSON.stringify(row.lines) } : row);
+}
 
 export function updateLedgerStatus(runId, status) {
   openDb().prepare('UPDATE ledger SET status = ? WHERE run_id = ?').run(status, runId);

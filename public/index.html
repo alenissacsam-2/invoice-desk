@@ -3,10 +3,30 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
 <title>Invoice Desk</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20'%3E%3Crect width='20' height='20' rx='5' fill='%232F4BDB'/%3E%3Cpath d='M6 7h8M6 10h8M6 13h5' stroke='%23fff' stroke-width='1.6' stroke-linecap='round'/%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<link rel="stylesheet" href="/styles.css">
+<script type="module" src="/app.js"></script>
 </head>
 <body>
-<h1>Invoice Desk</h1>
-<p>Placeholder.</p>
+<button type="button" class="skip" id="skip">Skip to content</button>
+<header class="top">
+  <a class="brand" href="#/" aria-label="Invoice Desk, home">
+    <svg class="brand-mark" width="20" height="20" viewBox="0 0 20 20" aria-hidden="true"><rect width="20" height="20" rx="5"/><path d="M6 7h8M6 10h8M6 13h5"/></svg>
+    <span class="brand-name">Invoice Desk</span>
+  </a>
+  <span class="brand-org">Halden Robotics · Accounts Payable</span>
+  <nav class="nav" aria-label="Main">
+    <a href="#/" data-nav="process">Process</a>
+    <a href="#/runs" data-nav="runs">Runs <span class="nav-count mono" id="runs-count"></span></a>
+    <a href="#/data" data-nav="data">Procurement data</a>
+  </nav>
+  <button type="button" class="btn ghost reset" id="reset">Reset demo</button>
+</header>
+<main id="main" tabindex="-1"></main>
 </body>
 </html>
