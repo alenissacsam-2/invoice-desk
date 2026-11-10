@@ -86,11 +86,12 @@ export function startRun({ bytes, mime, filename, source = 'upload', fresh = fal
     id, created_at: iso(), filename: filename || 'upload', file_sha: sha, mime: sn.mime || mime || 'application/octet-stream',
     bytes: buf, source, status: 'running', stages, retry_of: retryOf,
   });
-  // Demo replay: running a sample again supersedes its earlier runs (and their ledger rows), so the replay decides
-  // fresh instead of being caught as a duplicate of itself. Uploads keep full duplicate detection.
+  // Demo replay: running a sample again supersedes earlier runs of it, and of the exact same bytes uploaded by hand,
+  // so the replay decides fresh instead of being caught as a duplicate of itself. Uploads keep full duplicate detection.
   if (source === 'sample' && !retryOf) {
     for (const r of db.listRuns()) {
-      if (r.id === id || r.source !== 'sample' || r.filename !== filename || r.superseded_by) continue;
+      const same = r.file_sha === sha || (r.source === 'sample' && r.filename === filename);
+      if (r.id === id || !same || r.superseded_by) continue;
       db.updateRun(r.id, { superseded_by: id });
       db.updateLedgerStatus(r.id, 'superseded');
       emit(r.id, 'run', summarize(db.getRun(r.id)));
@@ -434,7 +435,7 @@ function reviewNow(id, { action, reviewer, note, callbackVerified }) {
   const run = db.getRun(id);
   if (!run) throw httpError(404, 'Run not found');
   if (action !== 'approve' && action !== 'reject') throw httpError(400, 'Choose approve or reject.');
-  if (run.superseded_by) throw httpError(409, `Superseded by retry ${run.superseded_by}`);
+  if (run.superseded_by) throw httpError(409, `Replaced by a later run, ${run.superseded_by}.`);
   if (run.status !== 'done' || run.decision !== 'REVIEW') throw httpError(409, 'Only invoices on hold (REVIEW) can be reviewed.');
   if (run.review) throw httpError(409, `This invoice was already ${run.review.action === 'approve' ? 'approved' : 'rejected'} by ${run.review.reviewer ?? 'a reviewer'}.`);
   const who = typeof reviewer === 'string' ? reviewer.trim() : '';
@@ -504,7 +505,7 @@ function recheckApproval(run, vendor, master) {
 export function retryRun(id, { extractor, beforeStart } = {}) {
   const run = db.getRun(id);
   if (!run) throw httpError(404, 'Run not found');
-  if (run.superseded_by) throw httpError(409, `Already retried as ${run.superseded_by}.`);
+  if (run.superseded_by) throw httpError(409, `Already replaced by a later run, ${run.superseded_by}.`);
   if (run.status === 'running') throw httpError(409, 'This run is still in progress.');
   const onHold = run.status === 'done' && run.decision === 'REVIEW' && !run.review && !run.final;
   if (run.status !== 'error' && !onHold) throw httpError(409, 'Only failed runs and invoices still on hold (not yet reviewed) can be retried.');

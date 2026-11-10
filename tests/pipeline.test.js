@@ -214,7 +214,7 @@ test(`the ${manifest.length} samples in manifest order`, async (t) => {
     const rows = db.getLedger().filter((l) => [orig.id, id].includes(l.run_id));
     assert.deepEqual(rows.map((r) => [r.run_id, r.status]), [[orig.id, 'superseded'], [id, 'on_hold']]);
     // The original is out of the game: no review, no second retry.
-    await assert.rejects(review(orig.id, { action: 'approve' }), (e) => e.status === 409 && e.message === `Superseded by retry ${id}`);
+    await assert.rejects(review(orig.id, { action: 'approve' }), (e) => e.status === 409 && e.message === `Replaced by a later run, ${id}.`);
     assert.throws(() => retryRun(orig.id), (e) => e.status === 409);
     // Only failed runs and unreviewed holds can be retried: never an approved, rejected or reviewed one.
     assert.throws(() => retryRun(runs['09_sharma_gst_inr.pdf'].id), (e) => e.status === 409);
@@ -546,6 +546,9 @@ test('replaying a sample supersedes its earlier run instead of rejecting it as a
   assert.equal(resend.decision, 'REJECT', 'a different file (the vendor resend) is still caught as a duplicate');
   const upload = await waitRun(startSample('01_acme_happy.pdf', { source: 'upload' }));
   assert.equal(upload.decision, 'REJECT', 'uploads keep full duplicate detection');
+  const again = await waitRun(startSample('01_acme_happy.pdf'));
+  assert.equal(again.decision, 'APPROVE', 'a replay also sets aside a hand upload of the same bytes');
+  assert.equal(db.getRun(upload.id).superseded_by, again.id);
 });
 
 test('two clicks on the same sample at once: only the later one books anything', async () => {

@@ -115,7 +115,7 @@ export function outcomeOf(r, decision = r?.decision) {
   const f = decision === 'REVIEW' ? finalOf(r) : null;
   if (f && f.by === 'reviewer' && DECISION[f.decision]) {
     const d = DECISION[f.decision];
-    return { decision: f.decision, word: f.decision === 'APPROVE' ? 'Approved' : 'Rejected', sub: 'By reviewer', tone: d.tone, copy: d.copy, human: f };
+    return { decision: f.decision, word: f.decision === 'APPROVE' ? 'Approved' : 'Void', sub: 'By reviewer', tone: d.tone, copy: d.copy, human: f };
   }
   const d = DECISION[decision];
   return d ? { decision, word: d.word, sub: null, tone: d.tone, copy: d.copy, human: null } : null;
@@ -124,7 +124,7 @@ export function outcomeOf(r, decision = r?.decision) {
 /** Small inked stamp for registers and the in-tray. */
 export function miniStamp(r, decision = r?.decision) {
   if (r?.status === 'running') return html`<span class="mark-running"><span class="caret" aria-hidden="true"></span>Processing</span>`;
-  if (r?.status === 'error') return html`<span class="mark-error">Not finished</span>`;
+  if (r?.status === 'error') return html`<span class="mark-error">Stopped</span>`;
   const o = outcomeOf(r || {}, decision);
   if (!o) return html`<span class="muted">—</span>`;
   return html`<span class="mini-stamp t-${o.tone}">${o.word}</span>`;
@@ -156,9 +156,6 @@ const P = {
   arrowRight: '<path d="M3.75 10h12.5M11.75 5.5l4.5 4.5-4.5 4.5"/>',
   arrowLeft: '<path d="M16.25 10H3.75M8.25 5.5 3.75 10l4.5 4.5"/>',
   doc: '<path d="M11.5 2.75H5.25C4.56 2.75 4 3.31 4 4v12c0 .69.56 1.25 1.25 1.25h9.5c.69 0 1.25-.56 1.25-1.25V7.25z"/><path d="M11.25 2.75v4.5h4.5M7 10.75h6M7 13.5h4"/>',
-  sun: '<circle cx="10" cy="10" r="3.25"/><path d="M10 2.5v1.5M10 16v1.5M2.5 10H4M16 10h1.5M4.7 4.7l1.06 1.06M14.24 14.24l1.06 1.06M4.7 15.3l1.06-1.06M14.24 5.76l1.06-1.06"/>',
-  moon: '<path d="M16.5 12.4A6.75 6.75 0 1 1 7.6 3.5a5.5 5.5 0 0 0 8.9 8.9z"/>',
-  monitor: '<rect x="2.75" y="3.5" width="14.5" height="10.25" rx="1.25"/><path d="M7 16.75h6M10 13.75v3"/>',
   info: '<circle cx="10" cy="10" r="7.25"/><path d="M10 9.25v4.5"/><path d="M10 6.4h.01" stroke-width="2"/>',
 };
 export const icon = (name, size = 20, label) =>
@@ -186,7 +183,7 @@ export function copyButton(text, label = 'Copy') {
 export async function handleCopy(btn) {
   const text = copies.get(btn.dataset.copy) ?? '';
   const span = btn.querySelector('span');
-  const before = span.textContent;
+  const before = btn.dataset.label ??= span.textContent; // a second click mid-flash keeps the original label
   try { await navigator.clipboard.writeText(text); span.textContent = 'Copied'; } catch { span.textContent = 'Copy failed'; }
   setTimeout(() => { span.textContent = before; }, 1500);
 }

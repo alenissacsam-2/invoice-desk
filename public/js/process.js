@@ -130,7 +130,7 @@ function renderSamples() {
   if (!list || !samples) return;
   $('#sample-count').textContent = samples.length || '';
   if (samplesError) { list.innerHTML = html`<li class="pad error-text">Couldn't load the sample invoices: ${samplesError}</li>`; return; }
-  if (!samples.length) { list.innerHTML = html`<li class="pad muted">No samples found in samples/manifest.json.</li>`; return; }
+  if (!samples.length) { list.innerHTML = html`<li class="pad muted">No sample invoices are available.</li>`; return; }
   const curFile = cur?.run?.source === 'sample' ? cur.run.filename : null;
   const focused = list.contains(document.activeElement) ? document.activeElement.dataset.file : null;
   list.innerHTML = html`${samples.map((s) => {
@@ -151,8 +151,8 @@ function renderSamples() {
           ${p && !shown ? html`<span class="mark-running"><span class="caret" aria-hidden="true"></span>Processing</span>`
             : p ? html`<span class="expects">Processed ${miniStamp({ status: 'done', decision: p.decision, final_decision: p.final_decision })}</span>`
             : d ? html`<span class="expects">Expects <strong class="tone-text t-${d.tone}">${EXPECT[s.expected]}</strong></span>` : ''}
-          ${s.runAfter ? html`<span class="hint">Run after ${sampleNo(s.runAfter) || s.runAfter}</span>` : ''}
         </span>
+        ${s.runAfter ? html`<span class="paper-hint">Run after ${sampleNo(s.runAfter) || s.runAfter}</span>` : ''}
         ${dupHint && isCur ? html`<span class="paper-hint">${dupHint}</span>` : ''}
       </span>
     </button></li>`;
@@ -377,9 +377,11 @@ function applyDone(run) {
 }
 
 // ---------------------------------------------------------------- the slip
+/** A tab with aria-controls and a roving tabindex; onTabKeys moves between tabs with the arrow keys. */
+const tab = (kind, k, label, on, controls, id = '') => html`<button type="button" role="tab" ${id ? html`id="${id}"` : ''} data-${kind}="${k}" aria-controls="${controls}" aria-selected="${on ? 'true' : 'false'}" tabindex="${on ? '0' : '-1'}">${label}</button>`;
+
 const switcher = (which) => html`<div class="switch" role="tablist" aria-label="Run view">
-  <button type="button" role="tab" data-switch="run" aria-selected="${which === 'run' ? 'true' : 'false'}">Slip</button>
-  <button type="button" role="tab" data-switch="doc" aria-selected="${which === 'doc' ? 'true' : 'false'}">Document</button>
+  ${tab('switch', 'run', 'Slip', which === 'run', 'run-col')}${tab('switch', 'doc', 'Document', which === 'doc', 'doc-col')}
 </div>`;
 
 function renderRun() {
@@ -399,12 +401,13 @@ function renderRun() {
       </header>
       <div id="slip-fields"></div>
       <section class="stages" aria-labelledby="tl-title">
-        <div class="stages-head"><h2 class="form-h" id="tl-title">Checks</h2><span class="tl-progress" id="tl-progress"></span></div>
+        <div class="stages-head"><h2 class="form-h" id="tl-title">Checks</h2><span class="tl-progress" id="tl-progress" role="status"></span></div>
         <div class="st-cols" aria-hidden="true"><span>No.</span><span></span><span>Check</span><span>Time</span><span></span></div>
         <ol class="timeline" id="timeline">${r.stages.map((s) => html`<li class="stage" data-key="${s.key}"></li>`)}</ol>
       </section>
       <div class="tear" aria-hidden="true"></div>
-      <div id="decision-slot" class="outcome" aria-live="polite"></div>
+      <div id="decision-slot" class="outcome"></div>
+      <p class="sr-only" id="decision-said" role="status"></p>
       <footer class="copies" id="copies"></footer>
     </article>`;
   cur.applied.clear();
@@ -438,7 +441,7 @@ function renderHead() {
     </p>
     ${running ? '' : timing(r)}
     ${canRetry ? html`<p class="form-error" id="retry-error" role="alert"></p>` : ''}
-    ${r.superseded_by ? html`<p class="superseded">Replaced by a retry. <a class="link" href="#/run/${encodeURIComponent(r.superseded_by)}">Open the newer slip ${icon('arrowRight', 16)}</a></p>` : ''}`;
+    ${r.superseded_by ? html`<p class="superseded">Replaced by a later run. <a class="link" href="#/run/${encodeURIComponent(r.superseded_by)}">Open the newer slip ${icon('arrowRight', 16)}</a></p>` : ''}`;
   if (running) {
     const t0 = c.t0 ?? (Date.parse(r.created_at) || Date.now());
     const tick = () => { const e = document.getElementById('elapsed'); if (e) e.textContent = `${(Math.max(0, c.liveMs ?? Date.now() - t0) / 1000).toFixed(1)} s`; };
@@ -454,7 +457,7 @@ function timing(r) {
   const d = ex.data || {};
   const checks = r.stages.reduce((a, s) => a + (s.key !== 'extract' && s.ms != null ? s.ms : 0), 0);
   const read = d.cached
-    ? html`Cached read${d.originalLatencyMs != null ? html` (first read <span class="typed">${dur(d.originalLatencyMs)}</span>)` : ''}`
+    ? html`Cached read${d.originalLatencyMs != null ? ` (first read ${dur(d.originalLatencyMs)})` : ''}`
     : html`Read <span class="typed">${dur(d.latencyMs ?? ex.ms)}</span>`;
   return html`<p class="run-split">${read} · checks <span class="typed">${dur(checks)}</span></p>`;
 }
@@ -563,7 +566,7 @@ function renderStage(key, animate) {
   const summary = s.summary ? prose(said) : (s.status === 'running' ? (key === 'extract' ? 'Gemini is reading the document' : 'Running the checks') : DESC[key] || '');
   const motion = changed && !reducedMotion();
   li.className = `stage s-${status}${open ? ' open' : ''}`;
-  li.innerHTML = html`<button type="button" class="stage-head" ${expandable ? '' : raw('disabled')} aria-expanded="${open ? 'true' : 'false'}" ${open ? raw(`aria-controls="sb-${esc(key)}"`) : ''}>
+  li.innerHTML = html`<button type="button" class="stage-head" ${expandable ? raw(`aria-expanded="${open}"`) : raw('disabled')} ${open ? raw(`aria-controls="sb-${esc(key)}"`) : ''}>
       ${stageRow({ ...s, status }, c.run.stages.indexOf(s) + 1, summary, motion && !!MARK[status])}
       <span class="chev">${expandable ? icon('chev', 16) : ''}</span>
     </button>
@@ -788,6 +791,11 @@ function renderDecisionSlot(animate = true) {
   const copies = $('#copies');
   if (copies) copies.innerHTML = copiesFooter(o?.copy || null);
   renderStampBox(kind, o, r, animate);
+  const said = $('#decision-said');
+  if (said && animate && kind !== 'pending') {
+    said.textContent = kind === 'error' ? `Stopped. ${ERROR_TITLE[r.result?.errorKind] || "This run couldn't finish"}`
+      : [o.word, o.human ? o.sub : prose(headlineOf(res))].filter(Boolean).join('. ');
+  }
   if (kind === 'error') slot.innerHTML = errorCard(r);
   else if (kind === 'pending') slot.innerHTML = html`<section class="remarks fbox" aria-labelledby="rm-title"><h2 class="fl" id="rm-title">Remarks</h2>
     <div class="ruled-blank" aria-hidden="true"><i></i><i></i><i></i></div>
@@ -840,11 +848,21 @@ function errorCard(r) {
   </section>`;
 }
 
+/** An in-flight button says what it is doing; busy(btn) with no text restores its own label. */
+function busy(btn, text) {
+  if (text) { btn.dataset.idle = btn.innerHTML; btn.textContent = text; btn.setAttribute('aria-busy', 'true'); } else {
+    if (btn.dataset.idle != null) btn.innerHTML = btn.dataset.idle;
+    delete btn.dataset.idle;
+    btn.removeAttribute('aria-busy');
+  }
+  btn.disabled = !!text;
+  btn.classList.toggle('busy', !!text);
+}
+
 async function retryRun(btn) {
   const c = cur, r = c.run;
   const err = $('#retry-error');
-  btn.disabled = true;
-  btn.classList.add('busy');
+  busy(btn, 'Starting…');
   try {
     let id;
     try { ({ id } = await api(`/api/runs/${encodeURIComponent(c.id)}/retry`, { method: 'POST' })); } catch (e) {
@@ -857,8 +875,7 @@ async function retryRun(btn) {
   } catch (e) {
     if (c !== cur) return;
     if (err) err.textContent = e.status === 404 ? "This server can't retry uploads yet. Drop the file again to start a new run." : [409, 429].includes(e.status) ? e.message : `Couldn't retry: ${e.message}`;
-    btn.disabled = false;
-    btn.classList.remove('busy');
+    busy(btn);
   }
 }
 
@@ -874,6 +891,11 @@ function spellMore(headline, primary, reasons) {
   if (rest.length !== +m[1]) return headline;
   const words = rest.length > 1 ? `, ${rest.slice(0, -1).join(', ')} and ${rest.at(-1)}` : ` and ${rest[0]}`;
   return headline.slice(0, m.index) + words + headline.slice(m.index + m[0].length);
+}
+
+function headlineOf(res) {
+  const primary = primaryOf(res);
+  return res.headline ? spellMore(res.headline, primary, Array.isArray(res.reasons) ? res.reasons : []) : primary ? reasonLabel(primary) : '';
 }
 
 function decisionCard(r, res, o) {
@@ -896,7 +918,7 @@ function decisionCard(r, res, o) {
   };
   const pay = fin ? (fin.decision === 'APPROVE' ? fin.payment : null) : res.payment;
   const ptone = primary ? (SEVERITY[primary.severity] || SEVERITY.hold).tone : 'neutral';
-  const headline = res.headline ? spellMore(res.headline, primary, reasons) : primary ? reasonLabel(primary) : '';
+  const headline = headlineOf(res);
   return html`<section class="remarks fbox" aria-labelledby="rm-title">
       <h2 class="fl" id="rm-title">Remarks</h2>
       ${fin ? html`<p class="rm-value muted">System held it${primary ? `: ${reasonLabel(primary)}` : ''}</p>`
@@ -1032,7 +1054,7 @@ async function submitReview(action, btn) {
   try { localStorage.setItem(NAME_KEY, reviewer); } catch { /* ignore */ }
   f.dataset.busy = '1';
   root.querySelectorAll('[data-review]').forEach((b) => { b.disabled = true; });
-  btn.classList.add('busy');
+  busy(btn, 'Saving…');
   try {
     await api(`/api/runs/${encodeURIComponent(c.id)}/review`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action, reviewer, note, callbackVerified }) });
     const run = await api(`/api/runs/${encodeURIComponent(c.id)}`);
@@ -1055,7 +1077,7 @@ async function submitReview(action, btn) {
     if (c !== cur) return;
     delete f.dataset.busy;
     if (err) err.textContent = [400, 409, 429].includes(e.status) ? e.message : `Couldn't save the review: ${e.message}`;
-    btn.classList.remove('busy');
+    busy(btn);
     validateReview();
   }
 }
@@ -1066,9 +1088,9 @@ const CLIP = raw('<svg class="clip" width="22" height="58" viewBox="0 0 22 58" a
 function renderDoc() {
   const c = cur, r = c.run, id = encodeURIComponent(c.id);
   const isImg = /^image\//.test(r.mime || '') || /\.(png|jpe?g)$/i.test(r.filename || '');
-  const tab = (k, label) => html`<button type="button" role="tab" id="tab-${k}" data-doctab="${k}" aria-controls="pane-${k}" aria-selected="${c.docTab === k ? 'true' : 'false'}" tabindex="${c.docTab === k ? '0' : '-1'}">${label}</button>`;
+  const docTab = (k, label) => tab('doctab', k, label, c.docTab === k, `pane-${k}`, `tab-${k}`);
   $('#doc-col').innerHTML = html`${switcher('doc')}
-    <div class="doc-bar"><div role="tablist" aria-label="Document view" class="tabs">${tab('doc', 'Document')}${tab('json', 'Extracted JSON')}</div>
+    <div class="doc-bar"><div role="tablist" aria-label="Document view" class="tabs">${docTab('doc', 'Document')}${docTab('json', 'Extracted JSON')}</div>
       <a class="link small doc-open" href="/api/runs/${id}/file" target="_blank" rel="noopener">Open original ${icon('external', 16)}</a></div>
     <div class="doc-sheet">${CLIP}
       <div class="doc-pane" id="pane-doc" role="tabpanel" aria-labelledby="tab-doc" ${c.docTab === 'doc' ? '' : raw('hidden')}>

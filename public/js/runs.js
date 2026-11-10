@@ -1,10 +1,10 @@
 // Runs dashboard: the batch control sheet (tally, exceptions) and the register of every run, plus the sample-batch runner.
-import { api, html, money, dur, ago, stamp, pct, pen, miniStamp, copySwatch, outcomeOf, runsChanged, reasonLabel, humanize, SEVERITY } from './util.js';
+import { api, html, raw, money, dur, ago, stamp, pct, pen, miniStamp, copySwatch, outcomeOf, runsChanged, reasonLabel, humanize, SEVERITY } from './util.js';
 
 const FILTERS = [
   ['all', 'All', () => true],
   ['APPROVE', 'Approved', (r) => r.decision === 'APPROVE'],
-  ['REVIEW', 'Held for review', (r) => r.decision === 'REVIEW'],
+  ['REVIEW', 'On hold', (r) => r.decision === 'REVIEW'],
   ['REJECT', 'Rejected', (r) => r.decision === 'REJECT'],
   // v2 rows carry final_decision (null until a person decides); v1 rows only have review.
   ['awaiting', 'Awaiting a person', (r) => r.status !== 'error' && !r.superseded_by && r.decision === 'REVIEW' && ('final_decision' in r ? r.final_decision == null : !reviewOf(r))],
@@ -15,6 +15,8 @@ let timer = null;
 let filter = 'all';
 let demo = null; // { i, n, error } while the sample batch is running
 let last = null; // { runs, stats }
+let showReplaced = false; // replayed or retried runs (superseded_by set) stay out of the register unless asked for
+const live = (runs) => runs.filter((r) => !r.superseded_by);
 
 export function mountRuns(main) {
   root = main;
@@ -36,7 +38,8 @@ async function load() {
     return;
   }
   if (!root) return;
-  render();
+  // Once the register is on screen, a reload (the 1.5 s poll) only refreshes it in place so focus, hover and the search survive.
+  if (last.runs.length && root.querySelector('#reg-rows')) refresh(); else render();
   loadTimings();
   if (demo || last.runs.some((r) => r.status === 'running')) timer = setTimeout(load, 1500);
 }
@@ -64,7 +67,8 @@ function timeCell(r) {
   if (r.status === 'running') return '';
   const t = timings.get(r.id);
   if (!t) return dur(r.ms);
-  return html`${t.read != null ? dur(t.read) : ''}${t.cached ? html`<span class="inferred" title="Read from the cache; this is the first read's time">cached</span>` : ''}<span class="cell-sub">checks ${dur(t.checks)}</span>`;
+  const read = t.cached ? html`<span class="inferred" ${t.read != null ? html`title="First read took ${dur(t.read)}"` : ''}>Cached read</span>` : t.read != null ? `${dur(t.read)} read` : '';
+  return html`${read}<span class="cell-sub">checks ${dur(t.checks)}</span>`;
 }
 
 let query = '';
@@ -73,12 +77,18 @@ const matches = (r) => {
   return !q || [vendorOf(r), r.invoice_number, r.po_number, r.filename].some((v) => v && String(v).toLowerCase().includes(q));
 };
 
+const rowsSig = new WeakMap(); // tbody -> the rows HTML it shows
 function renderRows() {
   const tb = root?.querySelector('#reg-rows');
   if (!tb) return;
   const f = FILTERS.find(([k]) => k === filter) || FILTERS[0];
-  const rows = last.runs.filter((r) => f[2](r) && matches(r));
-  tb.innerHTML = rows.length ? html`${rows.map(row)}` : html`<tr><td colspan="10" class="muted pad-cell">${query.trim() ? 'Nothing in the register matches this search.' : 'Nothing in the register matches this filter.'}</td></tr>`;
+  const rows = (showReplaced ? last.runs : live(last.runs)).filter((r) => f[2](r) && matches(r));
+  const next = String(rows.length ? html`${rows.map(row)}` : html`<tr><td colspan="10" class="muted pad-cell">${query.trim() ? 'Nothing in the register matches this search.' : 'Nothing in the register matches this filter.'}</td></tr>`);
+  if (rowsSig.get(tb) === next) return; // unchanged rows keep their DOM, so focus and hover stay put
+  const fk = tb.contains(document.activeElement) ? document.activeElement.dataset.fk : null;
+  rowsSig.set(tb, next);
+  tb.innerHTML = next;
+  if (fk) tb.querySelector(`[data-fk="${CSS.escape(fk)}"]`)?.focus();
 }
 
 const vendorOf = (r) => r.vendor_name || r.vendor?.name || r.vendor_id || 'Unknown vendor';
@@ -90,20 +100,35 @@ const reasonOf = (r) => {
 };
 const reviewOf = (r) => (typeof r.review === 'string' ? { action: r.review } : r.review || null);
 
+const pageHead = () => html`<header class="page-head">
+      <div><h1 class="page-title">Batch control</h1><p class="page-sub">Every invoice through the desk: what was decided, where it went and why.</p></div>
+      ${demo ? html`<p class="demo-progress" role="status">${demo.error ? html`<span class="error-text">${demo.error}</span>` : html`<span class="caret" aria-hidden="true"></span>Running the sample batch · <span class="typed">${demo.i} of ${demo.n}</span>`}</p>` : ''}
+    </header>`;
+const replacedLabel = (n) => (showReplaced ? 'Hide replaced slips' : `Show ${n} replaced ${n === 1 ? 'slip' : 'slips'}`);
+
 function render() {
   const { runs, stats } = last;
   const focusKey = document.activeElement?.dataset?.fk;
   root.innerHTML = html`<div class="page runs-page">
-    <header class="page-head">
-      <div><h1 class="page-title">Batch control</h1><p class="page-sub">Every invoice through the desk: what was decided, where it went and why.</p></div>
-      ${demo ? html`<p class="demo-progress" role="status">${demo.error ? html`<span class="error-text">${demo.error}</span>` : html`<span class="caret" aria-hidden="true"></span>Running the sample batch · <span class="typed">${demo.i} of ${demo.n}</span>`}</p>` : ''}
-    </header>
-    ${runs.length ? [overview(stats, runs), table(runs)] : empty()}
+    ${pageHead()}
+    ${runs.length ? [overview(stats, live(runs)), table(runs)] : empty()}
   </div>`;
   renderRows();
   const el = focusKey && root.querySelector(`[data-fk="${CSS.escape(focusKey)}"]`);
   el?.focus();
   if (el?.id === 'reg-find') el.setSelectionRange(el.value.length, el.value.length);
+}
+
+/** The poll's update: swap the head and tally only when they changed, patch the counts, redraw the rows. */
+function refresh() {
+  const { runs, stats } = last;
+  const swap = (el, next) => { if (el && el.outerHTML !== String(next)) el.outerHTML = next; };
+  swap(root.querySelector('.page-head'), pageHead());
+  swap(root.querySelector('.batch'), overview(stats, live(runs)));
+  for (const [k, , fn] of FILTERS) { const n = root.querySelector(`[data-filter="${k}"] .ftab-n`); if (n) n.textContent = live(runs).filter(fn).length; }
+  const b = root.querySelector('[data-replaced]'), n = runs.length - live(runs).length;
+  if (b) { b.hidden = !n; b.textContent = replacedLabel(n); }
+  renderRows();
 }
 
 function overview(s, runs) {
@@ -133,7 +158,7 @@ function overview(s, runs) {
     </dl>
     ${reasons.length ? html`<section class="exceptions" aria-labelledby="exc-title">
       <div class="exc-head"><h3 class="form-h" id="exc-title">Exceptions this batch</h3>
-        <p class="legend"><span><i class="t-reject"></i>Blocks payment</span><span><i class="t-review"></i>Held for review</span></p></div>
+        <p class="legend"><span><i class="t-reject"></i>Blocks payment</span><span><i class="t-review"></i>On hold</span></p></div>
       <ul class="exc-rows">${reasons.map((x) => { const sv = SEVERITY[x.severity] || SEVERITY.hold; return html`<li>
         <span class="exc-mark tone-text t-${sv.tone}">${pen(sv.mark, 16, sv.label)}</span>
         <span class="exc-label" title="${x.code} · ${sv.label}">${reasonLabel(x)}</span>
@@ -145,11 +170,15 @@ function overview(s, runs) {
 }
 
 function table(runs) {
+  const shown = live(runs), replaced = runs.length - shown.length;
   return html`<section class="register" aria-labelledby="reg-title">
     <div class="reg-head"><h2 class="sheet-title" id="reg-title">Register</h2><span class="sheet-note">Newest first. Open a row to see its slip.</span></div>
     <div class="reg-tools">
-      <div class="ftabs" role="group" aria-label="Filter the register">${FILTERS.map(([k, label, fn]) => html`<button type="button" class="ftab-btn" data-filter="${k}" data-fk="f-${k}" aria-pressed="${k === filter ? 'true' : 'false'}">${label} <span class="ftab-n">${runs.filter(fn).length}</span></button>`)}</div>
-      <label class="fbox input-box reg-find"><span class="fl">Find in register</span><input type="search" id="reg-find" data-fk="find" value="${query}" placeholder="Vendor, invoice, PO or file" autocomplete="off"></label>
+      <div class="ftabs" role="group" aria-label="Filter the register">${FILTERS.map(([k, label, fn]) => html`<button type="button" class="ftab-btn" data-filter="${k}" data-fk="f-${k}" aria-pressed="${k === filter ? 'true' : 'false'}">${label} <span class="ftab-n">${shown.filter(fn).length}</span></button>`)}</div>
+      <div class="reg-search">
+        <label class="fbox input-box reg-find"><span class="fl">Find in register</span><input type="search" id="reg-find" data-fk="find" value="${query}" placeholder="Vendor, invoice, PO or file" autocomplete="off"></label>
+        <button type="button" class="link small" data-replaced data-fk="replaced" ${replaced ? '' : raw('hidden')}>${replacedLabel(replaced)}</button>
+      </div>
     </div>
     <div class="sheet reg-sheet"><div class="tbl-wrap"><table class="tbl reg-tbl">
       <thead><tr><th><span class="sr-only">Copy</span></th><th>Received</th><th>Vendor</th><th>Invoice no.</th><th class="r">Amount</th><th>PO</th><th>Outcome</th><th>Routed to</th><th>Main reason</th><th class="r">Time taken</th></tr></thead>
@@ -163,14 +192,14 @@ function row(r) {
   const sv = reason ? SEVERITY[reason.severity] || SEVERITY.hold : null;
   const o = r.status === 'running' || r.status === 'error' ? null : outcomeOf(r);
   const human = o?.human;
-  return html`<tr class="run-row">
+  return html`<tr class="run-row${r.superseded_by ? ' replaced' : ''}">
     <td class="cell-sw">${o ? copySwatch(o.copy) : ''}</td>
     <td class="muted nowrap" title="${stamp(r.created_at)}">${ago(r.created_at)}</td>
     <td class="cell-vendor"><a class="row-link" href="#/run/${encodeURIComponent(r.id)}" data-fk="row-${r.id}">${vendorOf(r)}</a><span class="cell-file" title="${r.filename}">${r.filename || ''}</span></td>
     <td class="nowrap">${r.invoice_number || html`<span class="muted">—</span>`}</td>
     <td class="num">${r.total != null ? money(r.total, r.currency) : html`<span class="muted">—</span>`}</td>
     <td class="nowrap">${r.po_number || html`<span class="muted">—</span>`}${r.po_inferred ? html`<span class="inferred" title="PO inferred from lines and amount">inferred</span>` : ''}</td>
-    <td class="cell-outcome">${miniStamp(r)}${human ? html`<span class="reviewed-line">Held, then ${human.decision === 'APPROVE' ? 'approved' : 'rejected'} by ${human.reviewer || 'a reviewer'}</span>` : ''}${r.superseded_by ? html`<span class="reviewed-line">Replaced by a retry</span>` : ''}</td>
+    <td class="cell-outcome">${miniStamp(r)}${human ? html`<span class="reviewed-line">Held, then ${human.decision === 'APPROVE' ? 'approved' : 'rejected'} by ${human.reviewer || 'a reviewer'}</span>` : ''}${r.superseded_by ? html`<span class="reviewed-line">Replaced by a later run</span>` : ''}</td>
     <td class="nowrap">${routeOf(r) || html`<span class="muted">—</span>`}</td>
     <td>${!reason ? html`<span class="muted">—</span>` : reason.code ? html`<span class="reason-cell" title="${reason.code}${reason.message ? ` · ${reason.message}` : ''}"><span class="tone-text t-${sv.tone}">${pen(sv.mark, 16, sv.label)}</span>${reason.label || humanize(reason.code)}</span>` : html`<span class="reason-text" title="${reason.message}">${reason.message}</span>`}</td>
     <td class="num muted cell-time">${timeCell(r)}</td>
@@ -188,6 +217,8 @@ function empty() {
 function onClick(e) {
   const f = e.target.closest('[data-filter]');
   if (f) { filter = f.dataset.filter; render(); return; }
+  const t = e.target.closest('[data-replaced]');
+  if (t) { showReplaced = !showReplaced; t.textContent = replacedLabel(last.runs.length - live(last.runs).length); renderRows(); return; }
   if (e.target.closest('[data-demo]')) runDemo();
 }
 

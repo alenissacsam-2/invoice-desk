@@ -139,7 +139,7 @@ test('retry over HTTP: the original is superseded, cannot be reviewed, and drops
   assert.equal((await api('/api/runs')).body.find((x) => x.id === r7.id).superseded_by, body.id);
   const rev = await api(`/api/runs/${r7.id}/review`, { method: 'POST', body: JSON.stringify({ action: 'reject', reviewer: 'Sam', note: 'dup check' }) });
   assert.equal(rev.status, 409);
-  assert.equal(rev.body.error, `Superseded by retry ${body.id}`);
+  assert.equal(rev.body.error, `Replaced by a later run, ${body.id}.`);
   const stats = (await api('/api/stats')).body;
   assert.equal(stats.total, 2, 'the superseded run is not counted');
   assert.deepEqual(stats.byDecision, { APPROVE: 1, REVIEW: 1, REJECT: 0 });

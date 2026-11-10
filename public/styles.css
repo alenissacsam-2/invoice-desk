@@ -14,6 +14,7 @@
   --shadow-sheet: 0 1px 1px rgba(27, 34, 50, .07), 0 2px 4px -1px rgba(27, 34, 50, .08), 0 14px 30px -14px rgba(27, 34, 50, .3);
   --shadow-slip: 0 1px 1px rgba(27, 34, 50, .08), 0 3px 8px -3px rgba(27, 34, 50, .2);
   --shadow-lift: 0 2px 3px -1px rgba(27, 34, 50, .12), 0 10px 18px -8px rgba(27, 34, 50, .32);
+  --shadow-tray: inset 0 14px 10px -9px rgba(27, 34, 50, .3); /* the in-tray lip's shadow falling inside */
   --stamp-op: .88; --stamp-blend: multiply;
   --band-canary: #F2D246; --band-pink: #EE97B0; /* full-strength copy hues for the top band; same in both themes */
   --sans: 'Public Sans', system-ui, -apple-system, 'Segoe UI', sans-serif;
@@ -35,9 +36,10 @@
     --action: #8FAAF7; --on-ink: #0E131B;
     --clip: #8E99AC; --clip-shine: rgba(255, 255, 255, .35);
     --tab-plain: #283041; --tab-mint: #1F3A2C; --tab-amber: #3D3217; --tab-rose: #40232A; --tab-sky: #23314E;
-    --shadow-sheet: 0 1px 1px rgba(0, 0, 0, .4), 0 14px 30px -14px rgba(0, 0, 0, .75);
-    --shadow-slip: 0 1px 1px rgba(0, 0, 0, .4), 0 3px 8px -3px rgba(0, 0, 0, .55);
+    --shadow-sheet: 0 0 0 1px rgba(255, 255, 255, .08), 0 1px 1px rgba(0, 0, 0, .4), 0 14px 30px -14px rgba(0, 0, 0, .75);
+    --shadow-slip: 0 0 0 1px rgba(255, 255, 255, .08), 0 1px 1px rgba(0, 0, 0, .4), 0 3px 8px -3px rgba(0, 0, 0, .55);
     --shadow-lift: 0 2px 3px -1px rgba(0, 0, 0, .45), 0 10px 18px -8px rgba(0, 0, 0, .7);
+    --shadow-tray: inset 0 14px 10px -9px rgba(0, 0, 0, .6);
     --stamp-op: .92; --stamp-blend: screen;
     color-scheme: dark;
   }
@@ -52,9 +54,10 @@
   --action: #8FAAF7; --on-ink: #0E131B;
   --clip: #8E99AC; --clip-shine: rgba(255, 255, 255, .35);
   --tab-plain: #283041; --tab-mint: #1F3A2C; --tab-amber: #3D3217; --tab-rose: #40232A; --tab-sky: #23314E;
-  --shadow-sheet: 0 1px 1px rgba(0, 0, 0, .4), 0 14px 30px -14px rgba(0, 0, 0, .75);
-  --shadow-slip: 0 1px 1px rgba(0, 0, 0, .4), 0 3px 8px -3px rgba(0, 0, 0, .55);
+  --shadow-sheet: 0 0 0 1px rgba(255, 255, 255, .08), 0 1px 1px rgba(0, 0, 0, .4), 0 14px 30px -14px rgba(0, 0, 0, .75);
+  --shadow-slip: 0 0 0 1px rgba(255, 255, 255, .08), 0 1px 1px rgba(0, 0, 0, .4), 0 3px 8px -3px rgba(0, 0, 0, .55);
   --shadow-lift: 0 2px 3px -1px rgba(0, 0, 0, .45), 0 10px 18px -8px rgba(0, 0, 0, .7);
+  --shadow-tray: inset 0 14px 10px -9px rgba(0, 0, 0, .6);
   --stamp-op: .92; --stamp-blend: screen;
   color-scheme: dark;
 }
@@ -63,7 +66,6 @@
 .t-approve { --tone: var(--approve); }
 .t-review { --tone: var(--review); }
 .t-reject { --tone: var(--reject); }
-.t-accent { --tone: var(--form); }
 .t-neutral { --tone: var(--ink-3); }
 .tone-text { color: var(--tone, inherit); }
 
@@ -109,20 +111,21 @@ main:focus-visible, .data-section:focus-visible { outline: none; }
   font: 600 13.5px/1 var(--sans); text-decoration: none; cursor: pointer; white-space: nowrap;
   transition: background-color .12s, border-color .12s, transform .08s;
 }
-.btn:hover { border-color: var(--form); background: var(--form-faint); }
+.btn:hover:not(:disabled) { border-color: var(--form); background: var(--form-faint); }
 .btn:active:not(:disabled) { transform: translateY(1px); }
 .btn:disabled { opacity: .42; cursor: not-allowed; }
 .btn.sm { height: 28px; padding: 0 10px; font-size: 12.5px; gap: 5px; }
 .btn.ghost { border-color: transparent; background: transparent; color: var(--ink-2); }
-.btn.ghost:hover { background: var(--desk); border-color: var(--desk-edge); color: var(--ink); }
+.btn.ghost:hover:not(:disabled) { background: var(--desk); border-color: var(--desk-edge); color: var(--ink); }
 .btn.primary { background: var(--action); border-color: var(--action); color: var(--on-ink); }
-.btn.primary:hover { background: color-mix(in srgb, var(--action) 84%, var(--ink)); }
+.btn.primary:hover:not(:disabled) { background: color-mix(in srgb, var(--action) 84%, var(--ink)); }
 /* The sign-off buttons are the stamp inks: the only saturated controls on a slip. */
 .btn.approve { background: var(--approve); border-color: var(--approve); color: var(--on-ink); }
 .btn.reject { background: var(--reject); border-color: var(--reject); color: var(--on-ink); }
 .btn.approve:hover:not(:disabled) { background: color-mix(in srgb, var(--approve) 84%, var(--ink)); }
 .btn.reject:hover:not(:disabled) { background: color-mix(in srgb, var(--reject) 84%, var(--ink)); }
 .btn.busy { cursor: progress; }
+.btn.busy:disabled { opacity: 1; } /* working, not unavailable */
 .btn .pen { margin: -2px 0 0 -3px; }
 .link { background: none; border: 0; padding: 0; color: var(--form); font: inherit; font-weight: 600; cursor: pointer; text-decoration: none; display: inline-flex; align-items: center; gap: 4px; }
 .link:hover { text-decoration: underline; }
@@ -288,7 +291,7 @@ main:focus-visible, .data-section:focus-visible { outline: none; }
 .process.has-run.doc-hidden { grid-template-columns: 272px minmax(0, 1fr); }
 .process.has-run.doc-hidden .doc-col { display: none; }
 .tray { background: var(--desk-2); border-right: 1px solid var(--desk-edge); overflow-y: auto; padding: 16px 14px 28px; }
-.run-col { overflow-y: auto; padding: 18px 16px 44px; min-width: 0; }
+.run-col { overflow-y: auto; padding: 18px 16px 44px; min-width: 0; container-type: inline-size; }
 .doc-col { padding: 18px 18px 18px 4px; min-width: 0; display: flex; flex-direction: column; }
 .doc-col:empty { display: none; }
 .switch { display: none; }
@@ -299,7 +302,7 @@ main:focus-visible, .data-section:focus-visible { outline: none; }
   position: relative; display: flex; flex-direction: column; align-items: center; gap: 2px; margin-top: 8px; padding: 20px 12px 18px; text-align: center;
   background: var(--desk); border: 1px solid var(--desk-edge); border-radius: 0 0 5px 5px; cursor: pointer;
   /* the tray's lip throws a shadow in; a few sheets already lie at the bottom */
-  box-shadow: inset 0 5px 0 var(--lip, var(--desk-edge)), inset 0 14px 10px -9px rgba(27, 34, 50, .3), inset 0 -3px 0 var(--sheet), inset 0 -4px 0 var(--desk-edge), inset 0 -6px 0 var(--sheet), inset 0 -7px 0 var(--desk-edge);
+  box-shadow: inset 0 5px 0 var(--lip, var(--desk-edge)), var(--shadow-tray), inset 0 -3px 0 var(--sheet), inset 0 -4px 0 var(--desk-edge), inset 0 -6px 0 var(--sheet), inset 0 -7px 0 var(--desk-edge);
   transition: background-color .15s, border-color .15s;
 }
 .drop:hover { border-color: var(--form-rule); }
@@ -312,7 +315,8 @@ main:focus-visible, .data-section:focus-visible { outline: none; }
 .drop-title { font-weight: 700; font-size: 14.5px; margin-top: 4px; }
 .drop-sub { font-size: 13px; color: var(--ink-2); }
 .drop-note { font-size: 12px; color: var(--ink-2); margin-top: 2px; }
-.drop-msg { font-size: 13px; font-weight: 600; color: var(--reject); margin-top: 8px; }
+/* error text on the desk: a small sheet of its own keeps the vermilion legible */
+.drop-msg { margin-top: 8px; padding: 6px 9px; font-size: 13px; font-weight: 600; color: var(--reject); background: var(--sheet); border: 1px solid var(--reject); border-radius: 2px; }
 .drop-msg:empty { display: none; }
 .opt { display: flex; align-items: center; gap: 9px; margin-top: 12px; font-size: 13px; color: var(--ink-2); cursor: pointer; }
 .opt .box { margin: 0; }
@@ -327,6 +331,7 @@ main:focus-visible, .data-section:focus-visible { outline: none; }
 .paper:hover { transform: translateY(-1px); box-shadow: var(--shadow-lift); }
 .paper[aria-current="true"] { transform: translateX(7px); box-shadow: 0 0 0 1.5px var(--form), var(--shadow-lift); }
 .paper[aria-disabled="true"] { cursor: progress; }
+.paper[aria-disabled="true"]:not([aria-current="true"]):hover { transform: none; box-shadow: var(--shadow-slip); }
 .paper-no { font: 800 21px/1 var(--display); color: var(--form); padding-top: 1px; }
 .paper-body { display: grid; gap: 3px; min-width: 0; }
 .paper-vendor { font-weight: 700; font-size: 13.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -405,6 +410,11 @@ main:focus-visible, .data-section:focus-visible { outline: none; }
   margin-top: 14px; border-top: 1px solid var(--form-rule); border-left: 1px solid var(--form-rule);
 }
 .fields .fbox { min-height: 54px; border-right: 1px solid var(--form-rule); border-bottom: 1px solid var(--form-rule); }
+/* the five boxes need ~520px; a narrow slip column (document shown, or a small window) folds them 2-up */
+@container (max-width: 579px) {
+  .fields { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+  .fields .f-vendor { grid-column: 1 / -1; }
+}
 
 .stages { --st-grid: 22px 22px minmax(0, 1fr) 104px 16px; margin-top: 18px; }
 .stages-head { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 6px; }
@@ -547,6 +557,7 @@ main:focus-visible, .data-section:focus-visible { outline: none; }
 .sign-grid .fbox { border-right: 1px solid var(--form-rule); border-bottom: 1px solid var(--form-rule); }
 .f-note { grid-column: 1 / -1; }
 .input-box { display: block; cursor: text; }
+.sign .input-box { box-shadow: inset 0 -1.5px 0 var(--form); } /* the printed write-on line */
 .input-box:focus-within { background: color-mix(in srgb, var(--form) 7%, transparent); outline: 2px solid var(--form); outline-offset: -2px; }
 .input-box input, .input-box textarea {
   display: block; width: 100%; margin-top: 3px; padding: 2px 0; border: 0; background: transparent; outline: none;
@@ -561,7 +572,6 @@ main:focus-visible, .data-section:focus-visible { outline: none; }
 .form-error { color: var(--reject); font-size: 13px; font-weight: 600; margin-top: 8px; }
 .form-error:empty { display: none; }
 .callback-ok { display: flex; align-items: center; gap: 10px; margin-top: 10px; font-size: 13px; font-weight: 600; }
-.system-rec { margin-top: 10px; font-size: 13px; color: var(--ink-2); }
 
 .exception { padding-top: 4px; }
 .ex-title { font: 700 20px/1.25 var(--sans); }
@@ -633,7 +643,7 @@ main:focus-visible, .data-section:focus-visible { outline: none; }
 .legend span { display: inline-flex; align-items: center; gap: 6px; }
 .legend i { display: inline-block; width: 10px; height: 10px; background: var(--tone); }
 .exc-rows { display: grid; grid-template-columns: 1fr 1fr; column-gap: 36px; }
-.exc-rows li { display: grid; grid-template-columns: 16px minmax(0, 250px) minmax(60px, 1fr) 64px; align-items: center; gap: 10px; padding: 8px 0; border-bottom: 1px solid var(--form-rule); }
+.exc-rows li { display: grid; grid-template-columns: 16px minmax(0, 250px) minmax(60px, 1fr) minmax(64px, auto); align-items: center; gap: 10px; padding: 8px 0; border-bottom: 1px solid var(--form-rule); }
 .exc-mark .pen { margin-top: -3px; }
 .exc-label { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .exc-bar { height: 12px; padding: 1px; border: 1px solid var(--form-rule); }
@@ -645,8 +655,9 @@ main:focus-visible, .data-section:focus-visible { outline: none; }
 .reg-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 14px; margin-bottom: 10px; }
 .ftabs { display: flex; flex-wrap: wrap; gap: 3px; padding-left: 12px; }
 .reg-tools { display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: 8px 16px; }
-.reg-find { width: 280px; max-width: 100%; margin-bottom: 6px; border: 1px solid var(--form-rule); background: var(--sheet); }
-.cell-time .inferred { margin-left: 4px; }
+.reg-search { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 14px; margin-bottom: 6px; }
+.reg-find { width: 280px; max-width: 100%; border: 1px solid var(--ink-3); background: var(--sheet); } /* 3:1 or better on the desk, both themes */
+.cell-time .inferred { margin-left: 0; }
 .cell-sub { display: block; font-size: 12px; color: var(--ink-3); margin-top: 1px; white-space: nowrap; }
 .ftab-btn {
   display: inline-flex; align-items: center; gap: 7px; height: 34px; padding: 0 14px; cursor: pointer;
@@ -663,6 +674,7 @@ main:focus-visible, .data-section:focus-visible { outline: none; }
 .cell-outcome { min-width: 128px; }
 .cell-outcome .mini-stamp { margin-left: 1px; }
 .run-row { position: relative; }
+.run-row.replaced > td { opacity: .6; }
 .run-row:hover > td { background: color-mix(in srgb, var(--form) 5%, transparent); }
 .row-link { color: var(--ink); font-weight: 600; text-decoration: none; }
 .row-link::after { content: ''; position: absolute; inset: 0; }
@@ -686,7 +698,7 @@ main:focus-visible, .data-section:focus-visible { outline: none; }
 .toc a { display: flex; justify-content: space-between; padding: 7px 2px; border-bottom: 1px solid var(--desk-edge); color: var(--ink-2); font-weight: 600; text-decoration: none; }
 .toc a:hover { color: var(--form); }
 .toc .muted { color: var(--ink-2); font-weight: 400; }
-.policy { padding: 14px 16px; }
+.policy { padding: 14px 16px; container-type: inline-size; }
 .policy-form { display: grid; grid-template-columns: 1fr 1fr; margin-top: 10px; border-top: 1px solid var(--form-rule); border-left: 1px solid var(--form-rule); }
 .pf-row { min-width: 0; padding: 6px 9px 8px; border-right: 1px solid var(--form-rule); border-bottom: 1px solid var(--form-rule); }
 .pf-row.wide { grid-column: 1 / -1; }
@@ -694,6 +706,8 @@ main:focus-visible, .data-section:focus-visible { outline: none; }
 .pf-row.wide .typed { font-size: 14px; }
 .pf-note { margin-top: 2px; font-size: 11.5px; line-height: 1.35; color: var(--ink-2); }
 .policy-foot { margin-top: 10px; font-size: 12px; color: var(--ink-2); }
+/* the 300px data-page rail is too narrow for two boxes a row; the process page's wider rail keeps two */
+@container (max-width: 299px) { .policy-form { grid-template-columns: minmax(0, 1fr); } }
 .po-tbl td { vertical-align: middle; }
 .row-toggle { display: inline-flex; align-items: center; gap: 6px; padding: 2px 0; border: 0; background: none; cursor: pointer; font: 600 13px/1.3 var(--sans); color: var(--ink); }
 .row-toggle .chev { display: grid; color: var(--form); transition: transform .14s ease-out; }
@@ -766,7 +780,7 @@ main:focus-visible, .data-section:focus-visible { outline: none; }
   .batch, .reg-sheet, .data-section { padding-left: 12px; padding-right: 12px; }
   .tally { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .tval { font-size: 21px; }
-  .exc-rows li { grid-template-columns: 16px minmax(0, 1fr) 56px 64px; }
+  .exc-rows li { grid-template-columns: 16px minmax(0, 1fr) 56px minmax(64px, auto); }
   .ftabs { padding-left: 4px; }
   .ftab-btn { padding: 0 10px; }
   .data-aside { grid-template-columns: minmax(0, 1fr); }
@@ -777,6 +791,5 @@ main:focus-visible, .data-section:focus-visible { outline: none; }
   *, *::before, *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
 }
 
-/* error text that sits on the desk rather than a sheet: a small sheet of its own keeps the vermilion legible */
-.drop-msg { padding: 6px 9px; background: var(--sheet); border: 1px solid var(--reject); border-radius: 2px; }
+/* error text that sits on the desk rather than a sheet reads in ink */
 .tray .error-text, .demo-progress .error-text { color: var(--ink); }

@@ -6,6 +6,9 @@ const LEDGER = { approved: ['approve', 'Approved'], on_hold: ['review', 'On hold
 
 let root = null;
 const openPos = new Set();
+let showSetAside = false; // ledger rows of replaced runs (status superseded) stay hidden unless asked for
+let ledgerCtx = null; // { ledger, vName } for redrawing the ledger on toggle
+const liveRow = (l) => l.status !== 'superseded';
 
 export async function mountData(main) {
   root = main;
@@ -26,6 +29,8 @@ export async function mountData(main) {
       document.getElementById(t.getAttribute('aria-controls')).hidden = !open;
       return;
     }
+    const sa = e.target.closest('[data-setaside]');
+    if (sa) { showSetAside = !showSetAside; sa.textContent = setAsideLabel(); root.querySelector('#ledger-rows').innerHTML = ledgerRows(); return; }
     const s = e.target.closest('[data-scroll]');
     if (s) { e.preventDefault(); const el = document.getElementById(`sec-${s.dataset.scroll}`); el?.scrollIntoView({ behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth', block: 'start' }); el?.focus({ preventScroll: true }); }
   };
@@ -37,7 +42,7 @@ const arr = (x) => (Array.isArray(x) ? x : []);
 function render(d) {
   const vendors = arr(d.vendors), pos = arr(d.pos), receipts = arr(d.receipts), ledger = arr(d.ledger);
   const vName = Object.fromEntries(vendors.map((v) => [v.vendor_id, v.name]));
-  const counts = { pos: pos.length, vendors: vendors.length, receipts: receipts.length, ledger: ledger.length };
+  const counts = { pos: pos.length, vendors: vendors.length, receipts: receipts.length, ledger: ledger.filter(liveRow).length };
   const section = (key, title, body) => html`<section class="sheet data-section" id="sec-${key}" tabindex="-1" aria-labelledby="h-${key}">
     <div class="sheet-head"><h2 class="sheet-title" id="h-${key}">${title}</h2><span class="count">${counts[key]}</span></div>${body}</section>`;
   root.innerHTML = html`<div class="page data-page">
@@ -122,16 +127,30 @@ function receiptTable(receipts, pos) {
       <td class="num">${qty(g.qty_received)}</td><td class="nowrap">${day(g.received_date)}</td></tr>`; }) : none(6, 'No goods receipts loaded.')}</tbody></table>`);
 }
 
+const setAsideLabel = () => {
+  const n = ledgerCtx.ledger.filter((l) => !liveRow(l)).length;
+  return showSetAside ? 'Hide set-aside rows' : `Show ${n} set-aside ${n === 1 ? 'row' : 'rows'}`;
+};
+
 function ledgerTable(ledger, vName) {
-  return wrap(html`<table class="tbl">
+  ledgerCtx = { ledger, vName };
+  const setAside = ledger.some((l) => !liveRow(l));
+  return html`${wrap(html`<table class="tbl">
     <thead><tr><th>Invoice no.</th><th>Vendor</th><th>PO</th><th class="r">Net</th><th class="r">Total</th><th>Status</th><th><span class="sr-only">Run</span></th></tr></thead>
-    <tbody>${ledger.length ? ledger.map((l) => { const [tone, label] = LEDGER[l.status] || ['neutral', l.status]; return html`<tr>
+    <tbody id="ledger-rows">${ledgerRows()}</tbody></table>`)}
+    ${setAside ? html`<p class="table-note"><button type="button" class="link small" data-setaside>${setAsideLabel()}</button></p>` : ''}`;
+}
+
+function ledgerRows() {
+  const { vName } = ledgerCtx;
+  const ledger = showSetAside ? ledgerCtx.ledger : ledgerCtx.ledger.filter(liveRow);
+  return html`${ledger.length ? ledger.map((l) => { const [tone, label] = LEDGER[l.status] || ['neutral', l.status]; return html`<tr>
       <td class="nowrap">${l.invoice_number || html`<span class="muted">No number</span>`}</td>
       <td>${l.vendor_name || vName[l.vendor_id] || l.vendor_id}</td><td class="nowrap">${l.po_number || '—'}</td>
       <td class="num">${money(l.net, l.currency)}</td><td class="num">${money(l.total, l.currency)}</td>
       <td><span class="mini-stamp t-${tone}">${label}</span></td>
       <td class="r">${l.run_id ? html`<a class="link small nowrap" href="#/run/${encodeURIComponent(l.run_id)}">See the slip ${icon('arrowRight', 16)}</a>` : ''}</td></tr>`; })
-      : none(7, 'No ledger entries yet. Approved and held invoices are entered here.')}</tbody></table>`);
+      : none(7, 'No ledger entries yet. Approved and held invoices are entered here.')}`;
 }
 
 /** headerAbs is {USD:100, INR:8000, default:100} (v2) or a plain number (v1) → "at most $100 (₹8,000 for INR)". */
