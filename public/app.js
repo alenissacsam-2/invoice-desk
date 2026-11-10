@@ -36,6 +36,7 @@ function route() {
   });
   document.title = `${arg ? `Run ${arg}` : view.title} · Invoice Desk`;
   view.mount(main, arg);
+  refreshCount(); // the badge must match whatever page is now showing
   if (switched && document.activeElement?.closest('.nav')) main.focus({ preventScroll: true });
 }
 
@@ -89,4 +90,3 @@ document.addEventListener('click', (e) => { const b = e.target.closest('[data-co
 window.addEventListener('hashchange', route);
 window.addEventListener('runs-changed', refreshCount);
 route();
-refreshCount();

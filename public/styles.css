@@ -160,7 +160,7 @@ main:focus-visible, .data-section:focus-visible { outline: none; }
 .tick-box.sm { width: 16px; height: 16px; border-width: 1.25px; }
 .tick-box.sm .pen { left: -2px; top: -7px; }
 .s-warning .tick-box .pen { color: var(--review); }
-.s-failed .tick-box .pen, .s-blocked .tick-box .pen { color: var(--reject); }
+.s-failed .tick-box .pen, .s-blocked .tick-box .pen, .s-voided .tick-box .pen { color: var(--reject); }
 .s-skipped .tick-box .pen { color: var(--ink-3); }
 .tick-box.draw .pen path { stroke-dasharray: 1; stroke-dashoffset: 1; animation: pen-draw .22s cubic-bezier(.3, .7, .3, 1) forwards; }
 .tick-box.draw .pen path + path { animation-delay: .14s; }
@@ -434,7 +434,7 @@ main:focus-visible, .data-section:focus-visible { outline: none; }
 .s-running .tick-box { border-width: 2px; }
 .s-running .st-status { color: var(--form); }
 .s-warning .st-status { color: var(--review); }
-.s-failed .st-status, .s-blocked .st-status { color: var(--reject); }
+.s-failed .st-status, .s-blocked .st-status, .s-voided .st-status { color: var(--reject); }
 .s-pending .st-status, .s-skipped .st-status { color: var(--ink-3); font-weight: 400; }
 .s-pending .st-name { color: var(--ink-2); }
 .s-pending .st-name .ic { opacity: .6; }
@@ -644,6 +644,10 @@ main:focus-visible, .data-section:focus-visible { outline: none; }
 .register { margin-top: 28px; }
 .reg-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 14px; margin-bottom: 10px; }
 .ftabs { display: flex; flex-wrap: wrap; gap: 3px; padding-left: 12px; }
+.reg-tools { display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: 8px 16px; }
+.reg-find { width: 280px; max-width: 100%; margin-bottom: 6px; border: 1px solid var(--form-rule); background: var(--sheet); }
+.cell-time .inferred { margin-left: 4px; }
+.cell-sub { display: block; font-size: 12px; color: var(--ink-3); margin-top: 1px; white-space: nowrap; }
 .ftab-btn {
   display: inline-flex; align-items: center; gap: 7px; height: 34px; padding: 0 14px; cursor: pointer;
   border: 1px solid var(--desk-edge); border-bottom: 0; border-radius: 5px 5px 0 0; background: var(--desk-2); color: var(--ink-2); font: 600 13px/1 var(--sans);

@@ -1,7 +1,7 @@
 // Process screen: in-tray rail, the live processing slip (SSE), the clipped original document.
 import {
   api, html, raw, esc, money, num, qty, dur, clock, day, when, ago, prose, signedPct, icon, pen, runsChanged, copyButton,
-  reasonLabel, isCode, outcomeOf, miniStamp, reducedMotion,
+  reasonLabel, isCode, outcomeOf, finalOf, miniStamp, reducedMotion,
   DECISION, COPIES, CHECK_TONE, SEVERITY,
 } from './util.js';
 import { policyCard } from './data.js';
@@ -17,15 +17,15 @@ const STAGES = [
 ];
 const DESC = Object.fromEntries(STAGES.map(([k, , d]) => [k, d]));
 const STAGE_ICON = Object.fromEntries(STAGES.map(([k, , , i]) => [k, i]));
-const STATUS_WORD = { pending: 'Waiting', running: 'In progress', passed: 'Passed', warning: 'Warning', failed: 'Failed', skipped: 'Skipped', blocked: 'Blocks payment' };
-const MARK = { passed: 'pass', warning: 'warn', failed: 'fail', skipped: 'skip', blocked: 'fail' };
+const STATUS_WORD = { pending: 'Waiting', running: 'In progress', passed: 'Passed', warning: 'Warning', failed: 'Failed', skipped: 'Skipped', blocked: 'Blocks payment', voided: 'Voided' };
+const MARK = { passed: 'pass', warning: 'warn', failed: 'fail', skipped: 'skip', blocked: 'fail', voided: 'fail' };
 // The stage that raises each block-severity reason (src/rules.js), so a rejected slip marks its cause in vermilion.
 const BLOCK_STAGE = { NOT_AN_INVOICE: 'validate', VENDOR_BLOCKED: 'vendor', DUPLICATE_INVOICE: 'duplicate' };
 const CHECK_PEN = { pass: ['pass', 'Passed'], warn: ['warn', 'Warning'], fail: ['fail', 'Failed'], info: ['info', 'Note'] };
 const DESKS = ['AP file', 'Treasury & Security', 'Procurement', 'Receiving', 'AP clerk', 'Return to vendor'];
 const EXPECT = { APPROVE: 'approval', REVIEW: 'a hold', REJECT: 'rejection' };
 const GAP_MS = 280; // minimum time between visible stage transitions
-const MAX_BYTES = 10 * 1024 * 1024;
+const MAX_BYTES = 8 * 1024 * 1024; // the server limit
 const LOW_CONF = 0.7; // display only; the rules use src/config.js
 
 let root = null;      // .process element
@@ -86,7 +86,7 @@ function build(main) {
         <span class="drop-icon">${icon('upload', 22)}</span>
         <span class="drop-title" id="drop-title">Drop an invoice here</span>
         <span class="drop-sub">or <button type="button" class="link" id="browse">browse your files</button></span>
-        <span class="drop-note">PDF, PNG or JPG, up to 10 MB</span>
+        <span class="drop-note">PDF, PNG or JPG, up to 8 MB</span>
       </div>
       <p class="drop-msg" id="drop-msg" role="alert"></p>
       <label class="opt"><input type="checkbox" id="fresh" class="box"><span>Read the file fresh (skip the cache)</span></label>
@@ -179,7 +179,7 @@ async function upload(f) {
   const okType = /^(application\/pdf|image\/png|image\/jpeg)$/.test(f.type) || /\.(pdf|png|jpe?g)$/i.test(f.name);
   if (!okType) return dropMsg("This file isn't a PDF or image. Drop a PDF, PNG or JPG.");
   if (!f.size) return dropMsg('This file is empty.');
-  if (f.size > MAX_BYTES) return dropMsg(`This file is ${(f.size / 1048576).toFixed(1)} MB. The limit is 10 MB.`);
+  if (f.size > MAX_BYTES) return dropMsg(`This file is ${(f.size / 1048576).toFixed(1)} MB. The limit is 8 MB.`);
   if (starting) return;
   starting = true;
   const drop = $('#drop'), title = $('#drop-title');
@@ -298,9 +298,10 @@ function openRun(id) {
 
   const parse = (e) => { try { return JSON.parse(e.data); } catch { return null; } };
   const es = c.es = new EventSource(`/api/runs/${encodeURIComponent(id)}/events`);
-  es.addEventListener('snapshot', (e) => { const run = parse(e); if (c === cur && run) { c.queue.length = 0; applySnapshot(run); } });
+  // Wall time this page watched, first event to done; the server's own `ms` is shown for runs opened afterwards.
+  es.addEventListener('snapshot', (e) => { const run = parse(e); if (c === cur && run) { if (run.status === 'running') c.t0 ??= Date.now(); c.queue.length = 0; applySnapshot(run); } });
   es.addEventListener('stage', (e) => { const d = parse(e); const s = d?.stage || d; if (c === cur && s?.key) enqueue(() => applyStage(s)); });
-  es.addEventListener('done', (e) => { const run = parse(e); c.done = true; es.close(); if (c === cur) enqueue(() => applyDone(run?.run || run)); });
+  es.addEventListener('done', (e) => { const run = parse(e); c.done = true; if (c.t0 != null) c.liveMs = Date.now() - c.t0; es.close(); if (c === cur) enqueue(() => applyDone(run?.run || run)); });
   // Reset demo clears every run: the server says so, then closes the stream.
   es.addEventListener('reset', () => { c.done = true; es.close(); if (c === cur) { renderMissing({ status: 404 }); loadSamples(); runsChanged(); } });
   es.onerror = () => { if (c !== cur || c.done) return; es.close(); poll(c); };
@@ -325,7 +326,8 @@ function pump(c) {
   if (c !== cur || c.busy || !c.queue.length) return;
   c.busy = true;
   c.queue.shift()();
-  setTimeout(() => { c.busy = false; pump(c); }, GAP_MS);
+  // Once the run is done, the rows still queued catch up quickly so the slip never outlasts the real run.
+  setTimeout(() => { c.busy = false; pump(c); }, c.done ? 60 : GAP_MS);
 }
 
 /** Stages render in the order the run gives them; the default list only fills a run that has none yet. */
@@ -422,23 +424,39 @@ function renderHead() {
   if (!el) return;
   clearInterval(c.tick);
   const running = r.status === 'running';
-  const cached = r.stages.find((s) => s.key === 'extract')?.data?.cached;
   const source = { sample: 'Sample', upload: 'Upload' }[r.source] || r.source;
+  // A held run nobody has signed off can be read again (the server refuses with 409 otherwise).
+  const canRetry = !running && !isError(r) && r.decision === 'REVIEW' && !r.superseded_by && finalOf(r)?.by !== 'reviewer';
   el.innerHTML = html`<p class="meta-file" title="${r.filename}">${r.filename || 'Untitled document'}</p>
-    <p class="meta-bits"><span>Run <span class="typed">${r.id}</span></span><span>Started <span class="typed">${clock(r.created_at)}</span></span>${source ? html`<span>${source}</span>` : ''}${cached ? html`<span>Cached read</span>` : ''}</p>
+    <p class="meta-bits"><span>Run <span class="typed">${r.id}</span></span><span>Started <span class="typed">${clock(r.created_at)}</span></span>${source ? html`<span>${source}</span>` : ''}</p>
     <p class="meta-bits">
       <span class="run-clock ${running ? 'live' : ''}">${running
         ? html`<span class="caret" aria-hidden="true"></span>Running <span class="typed" id="elapsed"></span>`
-        : isError(r) ? 'Stopped' : html`Finished in <span class="typed">${dur(r.ms)}</span>`}</span>
+        : isError(r) ? 'Stopped' : html`Finished in <span class="typed">${dur(c.liveMs ?? r.ms)}</span>`}</span>
       <button type="button" class="link small doc-toggle" data-doc-toggle>${icon('doc', 16)}${docHidden ? 'Show document' : 'Hide document'}</button>
+      ${canRetry ? html`<button type="button" class="link small" data-retry title="Starts a new run on the same file and reads it fresh">${icon('retry', 16)}Retry</button>` : ''}
     </p>
+    ${running ? '' : timing(r)}
+    ${canRetry ? html`<p class="form-error" id="retry-error" role="alert"></p>` : ''}
     ${r.superseded_by ? html`<p class="superseded">Replaced by a retry. <a class="link" href="#/run/${encodeURIComponent(r.superseded_by)}">Open the newer slip ${icon('arrowRight', 16)}</a></p>` : ''}`;
   if (running) {
-    const t0 = Date.parse(r.created_at) || Date.now();
-    const tick = () => { const e = document.getElementById('elapsed'); if (e) e.textContent = `${(Math.max(0, Date.now() - t0) / 1000).toFixed(1)} s`; };
+    const t0 = c.t0 ?? (Date.parse(r.created_at) || Date.now());
+    const tick = () => { const e = document.getElementById('elapsed'); if (e) e.textContent = `${(Math.max(0, c.liveMs ?? Date.now() - t0) / 1000).toFixed(1)} s`; };
     tick();
     c.tick = setInterval(tick, 100);
   }
+}
+
+/** 'Read 4.1 s · checks 14 ms': the AI read and the plain rules, timed apart. */
+function timing(r) {
+  const ex = r.stages.find((s) => s.key === 'extract');
+  if (!ex || !['passed', 'warning'].includes(ex.status)) return '';
+  const d = ex.data || {};
+  const checks = r.stages.reduce((a, s) => a + (s.key !== 'extract' && s.ms != null ? s.ms : 0), 0);
+  const read = d.cached
+    ? html`Cached read${d.originalLatencyMs != null ? html` (first read <span class="typed">${dur(d.originalLatencyMs)}</span>)` : ''}`
+    : html`Read <span class="typed">${dur(d.latencyMs ?? ex.ms)}</span>`;
+  return html`<p class="run-split">${read} · checks <span class="typed">${dur(checks)}</span></p>`;
 }
 
 // ---- the boxed field row: what the clerk types in from the invoice
@@ -505,6 +523,8 @@ const isOpen = (s) => (cur.manual.has(s.key) ? cur.manual.get(s.key) : ['running
 function shownStatus(s) {
   const res = cur?.run?.result?.decision ? cur.run.result : cur?.run?.stages.find((x) => x.key === 'decision')?.data;
   if (res?.decision !== 'REJECT' || !['warning', 'failed'].includes(s.status)) return s.status;
+  // A deliberate reject is not a failure of the decision stage.
+  if (s.key === 'decision') return isError(cur.run) ? s.status : 'voided';
   return (res.reasons || []).some((x) => x.severity === 'block' && BLOCK_STAGE[x.code] === s.key) ? 'blocked' : s.status;
 }
 
@@ -863,7 +883,9 @@ function decisionCard(r, res, o) {
   const notes = reasons.filter((x) => x.severity === 'info');
   const actions = Array.isArray(res.nextActions) ? res.nextActions : [];
   const primary = primaryOf(res);
-  const explained = res.explanation || '';
+  // Once a person decides, the system's pending prose ("nothing will be paid until…") no longer holds.
+  const explanation = fin ? '' : res.explanation || '';
+  const explained = explanation;
   const reasonRow = (x) => {
     const sv = SEVERITY[x.severity] || SEVERITY.info;
     // A message the explanation already says is not repeated under its reason.
@@ -877,19 +899,20 @@ function decisionCard(r, res, o) {
   const headline = res.headline ? spellMore(res.headline, primary, reasons) : primary ? reasonLabel(primary) : '';
   return html`<section class="remarks fbox" aria-labelledby="rm-title">
       <h2 class="fl" id="rm-title">Remarks</h2>
-      ${headline ? html`<p class="rm-value typed${res.decision !== 'APPROVE' ? ` tone-text t-${ptone}` : ''}">${prose(headline)}</p>` : ''}
-      ${res.explanation ? html`<p class="explanation">${prose(res.explanation)}</p>` : ''}
+      ${fin ? html`<p class="rm-value muted">System held it${primary ? `: ${reasonLabel(primary)}` : ''}</p>`
+        : headline ? html`<p class="rm-value typed${res.decision !== 'APPROVE' ? ` tone-text t-${ptone}` : ''}">${prose(headline)}</p>` : ''}
+      ${explanation ? html`<p class="explanation">${prose(explanation)}</p>` : ''}
       ${holds.length ? html`<ul class="reasons">${holds.map(reasonRow)}</ul>` : ''}
       ${notes.length ? html`<h3 class="form-h3">Notes</h3><ul class="reasons notes">${notes.map(reasonRow)}</ul>` : ''}
     </section>
     <div class="outcome-grid">
       ${routingSlip(res, fin)}
-      ${actions.length ? html`<section class="next" aria-labelledby="na-title"><h2 class="form-h" id="na-title">Next actions</h2>
+      ${fin ? reviewerOutcome(fin) : actions.length ? html`<section class="next" aria-labelledby="na-title"><h2 class="form-h" id="na-title">Next actions</h2>
         <ul class="actions">${actions.map((a, i) => html`<li><input type="checkbox" class="box" id="na-${r.id}-${i}"><label for="na-${r.id}-${i}">${prose(a)}</label></li>`)}</ul></section>` : ''}
     </div>
     ${paymentLine(pay)}
     ${res.vendorEmail ? emailBlock(res.vendorEmail) : ''}
-    ${res.decision === 'REVIEW' ? (fin ? signedBlock(fin, primary) : r.superseded_by ? supersededBlock(r) : reviewForm(r, res)) : ''}`;
+    ${res.decision === 'REVIEW' ? (fin ? signedBlock(fin) : r.superseded_by ? supersededBlock(r) : reviewForm(r, res)) : ''}`;
 }
 
 /** The routing slip: every desk on the form, ticked where this invoice went. */
@@ -953,7 +976,19 @@ function reviewForm(r, res) {
 const supersededBlock = (r) => html`<section class="sign" aria-labelledby="sign-title"><h2 class="form-h" id="sign-title">Reviewer sign-off</h2>
   <p class="sign-lede">This hold was retried as a new run, so it is signed off there. <a class="link" href="#/run/${encodeURIComponent(r.superseded_by)}">Open the newer slip ${icon('arrowRight', 16)}</a></p></section>`;
 
-function signedBlock(fin, primary) {
+/** In place of the system's next actions once a reviewer has decided. */
+function reviewerOutcome(fin) {
+  const who = fin.reviewer || fin.review?.reviewer || 'a reviewer';
+  const on = fin.at ? ` on ${localDay(fin.at)}` : '';
+  const sched = fin.payment?.scheduledFor;
+  const text = fin.decision === 'APPROVE'
+    ? `Approved by ${who}${on} — ${sched ? `payment scheduled ${day(sched)}` : 'payment scheduled'}`
+    : `Rejected by ${who}${on} — vendor to be told`;
+  return html`<section class="next" aria-labelledby="na-title"><h2 class="form-h" id="na-title">Outcome</h2>
+    <p class="rm-value typed tone-text t-${fin.decision === 'APPROVE' ? 'approve' : 'reject'}">${text}</p></section>`;
+}
+
+function signedBlock(fin) {
   const rv = fin.review || {};
   const who = fin.reviewer || rv.reviewer;
   return html`<section class="sign signed" aria-labelledby="sign-title">
@@ -964,7 +999,6 @@ function signedBlock(fin, primary) {
       <div class="fbox f-note"><dt class="fl">Note</dt><dd class="typed">${rv.note || '—'}</dd></div>
     </dl>
     ${rv.callbackVerified ? html`<p class="callback-ok"><span class="tick-box sm">${pen('pass', 22)}</span>Confirmed by call-back to the number in the vendor master</p>` : ''}
-    <p class="system-rec">The system held it${primary ? html`: <strong>${reasonLabel(primary)}</strong>` : ''}. ${who || 'A reviewer'} ${fin.decision === 'APPROVE' ? 'approved it for payment' : 'rejected it'}.</p>
   </section>`;
 }
 
@@ -1013,6 +1047,7 @@ async function submitReview(action, btn) {
       await new Promise((ok) => setTimeout(ok, 450));
       if (c !== cur) return;
     } else if (slip && slip.getBoundingClientRect().top < 0) slip.scrollIntoView({ block: 'start' });
+    renderHead(); // drops the Retry link: a signed-off hold cannot be retried
     renderDecisionSlot(true);
     loadSamples();
     runsChanged();

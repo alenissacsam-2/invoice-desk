@@ -21,9 +21,10 @@ export function mountRuns(main) {
   if (!last) root.innerHTML = html`<div class="page"><p class="loading muted"><span class="caret" aria-hidden="true"></span> Pulling the register…</p></div>`;
   else render();
   root.onclick = onClick;
+  root.oninput = (e) => { if (e.target.id === 'reg-find') { query = e.target.value; renderRows(); } };
   load();
 }
-export function unmountRuns() { clearTimeout(timer); if (root) root.onclick = null; root = null; }
+export function unmountRuns() { clearTimeout(timer); if (root) root.onclick = root.oninput = null; root = null; }
 
 async function load() {
   clearTimeout(timer);
@@ -36,7 +37,48 @@ async function load() {
   }
   if (!root) return;
   render();
+  loadTimings();
   if (demo || last.runs.some((r) => r.status === 'running')) timer = setTimeout(load, 1500);
+}
+
+// The list rows carry only the whole-run `ms`; the read/checks split needs each finished run's stages (they don't change once done).
+// shortcut: one detail fetch per finished run, fine for a demo-sized register; upgrade to list fields if it grows.
+const timings = new Map(); // id -> { read, cached, checks }
+async function loadTimings() {
+  const todo = last.runs.filter((r) => r.status !== 'running' && !timings.has(r.id));
+  if (!todo.length) return;
+  await Promise.all(todo.map(async (r) => {
+    try {
+      const d = await api(`/api/runs/${encodeURIComponent(r.id)}`);
+      const ex = (d.stages || []).find((s) => s.key === 'extract');
+      if (!ex || !['passed', 'warning'].includes(ex.status)) return timings.set(r.id, null);
+      const x = ex.data || {};
+      const checks = d.stages.reduce((a, s) => a + (s.key !== 'extract' && s.ms != null ? s.ms : 0), 0);
+      timings.set(r.id, { cached: !!x.cached, read: x.cached ? x.originalLatencyMs ?? null : x.latencyMs ?? ex.ms, checks });
+    } catch { /* keep the whole-run time */ }
+  }));
+  if (root && last) renderRows();
+}
+
+function timeCell(r) {
+  if (r.status === 'running') return '';
+  const t = timings.get(r.id);
+  if (!t) return dur(r.ms);
+  return html`${t.read != null ? dur(t.read) : ''}${t.cached ? html`<span class="inferred" title="Read from the cache; this is the first read's time">cached</span>` : ''}<span class="cell-sub">checks ${dur(t.checks)}</span>`;
+}
+
+let query = '';
+const matches = (r) => {
+  const q = query.trim().toLowerCase();
+  return !q || [vendorOf(r), r.invoice_number, r.po_number, r.filename].some((v) => v && String(v).toLowerCase().includes(q));
+};
+
+function renderRows() {
+  const tb = root?.querySelector('#reg-rows');
+  if (!tb) return;
+  const f = FILTERS.find(([k]) => k === filter) || FILTERS[0];
+  const rows = last.runs.filter((r) => f[2](r) && matches(r));
+  tb.innerHTML = rows.length ? html`${rows.map(row)}` : html`<tr><td colspan="10" class="muted pad-cell">${query.trim() ? 'Nothing in the register matches this search.' : 'Nothing in the register matches this filter.'}</td></tr>`;
 }
 
 const vendorOf = (r) => r.vendor_name || r.vendor?.name || r.vendor_id || 'Unknown vendor';
@@ -58,7 +100,10 @@ function render() {
     </header>
     ${runs.length ? [overview(stats, runs), table(runs)] : empty()}
   </div>`;
-  if (focusKey) root.querySelector(`[data-fk="${CSS.escape(focusKey)}"]`)?.focus();
+  renderRows();
+  const el = focusKey && root.querySelector(`[data-fk="${CSS.escape(focusKey)}"]`);
+  el?.focus();
+  if (el?.id === 'reg-find') el.setSelectionRange(el.value.length, el.value.length);
 }
 
 function overview(s, runs) {
@@ -84,7 +129,7 @@ function overview(s, runs) {
       ${cell('Awaiting a person', awaiting, by.REVIEW ? `${signedOff} of ${by.REVIEW} held signed off` : 'Nothing held', ['warn', 'review'])}
       ${cell('Returned or rejected', rejected, by.REJECT || byPerson ? `${by.REJECT || 0} by the rules · ${byPerson} by a reviewer` : 'Nothing rejected', ['fail', 'reject'])}
       ${cell('Value approved', first ? money(first[1], first[0]) : money(0, 'USD'), rest.length ? `+ ${rest.map(([c, v]) => money(v, c)).join(' · ')}` : 'Scheduled for payment')}
-      ${cell('Median read time', s.medianReadMs != null ? dur(s.medianReadMs) : '—', s.medianMs != null ? `AI read · whole run ${dur(s.medianMs)}` : 'AI extraction')}
+      ${cell('Median read time', s.medianReadMs != null ? dur(s.medianReadMs) : '—', s.medianReadMs != null ? 'AI reading; the rules take under 50 ms' : 'AI extraction')}
     </dl>
     ${reasons.length ? html`<section class="exceptions" aria-labelledby="exc-title">
       <div class="exc-head"><h3 class="form-h" id="exc-title">Exceptions this batch</h3>
@@ -100,14 +145,15 @@ function overview(s, runs) {
 }
 
 function table(runs) {
-  const f = FILTERS.find(([k]) => k === filter) || FILTERS[0];
-  const rows = runs.filter(f[2]);
   return html`<section class="register" aria-labelledby="reg-title">
     <div class="reg-head"><h2 class="sheet-title" id="reg-title">Register</h2><span class="sheet-note">Newest first. Open a row to see its slip.</span></div>
-    <div class="ftabs" role="group" aria-label="Filter the register">${FILTERS.map(([k, label, fn]) => html`<button type="button" class="ftab-btn" data-filter="${k}" data-fk="f-${k}" aria-pressed="${k === filter ? 'true' : 'false'}">${label} <span class="ftab-n">${runs.filter(fn).length}</span></button>`)}</div>
+    <div class="reg-tools">
+      <div class="ftabs" role="group" aria-label="Filter the register">${FILTERS.map(([k, label, fn]) => html`<button type="button" class="ftab-btn" data-filter="${k}" data-fk="f-${k}" aria-pressed="${k === filter ? 'true' : 'false'}">${label} <span class="ftab-n">${runs.filter(fn).length}</span></button>`)}</div>
+      <label class="fbox input-box reg-find"><span class="fl">Find in register</span><input type="search" id="reg-find" data-fk="find" value="${query}" placeholder="Vendor, invoice, PO or file" autocomplete="off"></label>
+    </div>
     <div class="sheet reg-sheet"><div class="tbl-wrap"><table class="tbl reg-tbl">
       <thead><tr><th><span class="sr-only">Copy</span></th><th>Received</th><th>Vendor</th><th>Invoice no.</th><th class="r">Amount</th><th>PO</th><th>Outcome</th><th>Routed to</th><th>Main reason</th><th class="r">Time taken</th></tr></thead>
-      <tbody>${rows.length ? rows.map(row) : html`<tr><td colspan="10" class="muted pad-cell">Nothing in the register matches this filter.</td></tr>`}</tbody>
+      <tbody id="reg-rows"></tbody>
     </table></div></div>
   </section>`;
 }
@@ -127,7 +173,7 @@ function row(r) {
     <td class="cell-outcome">${miniStamp(r)}${human ? html`<span class="reviewed-line">Held, then ${human.decision === 'APPROVE' ? 'approved' : 'rejected'} by ${human.reviewer || 'a reviewer'}</span>` : ''}${r.superseded_by ? html`<span class="reviewed-line">Replaced by a retry</span>` : ''}</td>
     <td class="nowrap">${routeOf(r) || html`<span class="muted">—</span>`}</td>
     <td>${!reason ? html`<span class="muted">—</span>` : reason.code ? html`<span class="reason-cell" title="${reason.code}${reason.message ? ` · ${reason.message}` : ''}"><span class="tone-text t-${sv.tone}">${pen(sv.mark, 16, sv.label)}</span>${reason.label || humanize(reason.code)}</span>` : html`<span class="reason-text" title="${reason.message}">${reason.message}</span>`}</td>
-    <td class="num muted">${r.status === 'running' ? '' : dur(r.ms)}</td>
+    <td class="num muted cell-time">${timeCell(r)}</td>
   </tr>`;
 }
 
