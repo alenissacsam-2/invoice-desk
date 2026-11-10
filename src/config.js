@@ -31,8 +31,8 @@ export const TOL = {
 
 export const GEMINI = {
   key: process.env.GEMINI_API_KEY || '',
-  primary: process.env.GEMINI_MODEL || 'gemini-2.5-flash',
-  fallback: process.env.GEMINI_FALLBACK_MODEL || 'gemini-2.5-flash-lite',
+  primary: process.env.GEMINI_MODEL || 'gemini-3.5-flash-lite',
+  fallback: process.env.GEMINI_FALLBACK_MODEL || 'gemini-3.1-flash-lite',
 };
 
 export const MAX_UPLOAD_BYTES = 10 * 1024 * 1024;
