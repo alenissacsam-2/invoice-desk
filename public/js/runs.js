@@ -1,24 +1,24 @@
-// Runs dashboard: KPIs, hold/reject reasons, filterable history table, demo-set runner.
-import { api, html, money, dur, ago, stamp, pct, icon, decisionChip, runsChanged, reasonLabel, humanize, finalOf, SEVERITY, DECISION } from './util.js';
+// Runs dashboard: the batch control sheet (tally, exceptions) and the register of every run, plus the sample-batch runner.
+import { api, html, money, dur, ago, stamp, pct, pen, miniStamp, copySwatch, outcomeOf, runsChanged, reasonLabel, humanize, SEVERITY } from './util.js';
 
 const FILTERS = [
   ['all', 'All', () => true],
   ['APPROVE', 'Approved', (r) => r.decision === 'APPROVE'],
-  ['REVIEW', 'Review', (r) => r.decision === 'REVIEW'],
+  ['REVIEW', 'Held for review', (r) => r.decision === 'REVIEW'],
   ['REJECT', 'Rejected', (r) => r.decision === 'REJECT'],
   // v2 rows carry final_decision (null until a person decides); v1 rows only have review.
-  ['awaiting', 'Awaiting human', (r) => r.status !== 'error' && r.decision === 'REVIEW' && ('final_decision' in r ? r.final_decision == null : !reviewOf(r))],
+  ['awaiting', 'Awaiting a person', (r) => r.status !== 'error' && !r.superseded_by && r.decision === 'REVIEW' && ('final_decision' in r ? r.final_decision == null : !reviewOf(r))],
 ];
 
 let root = null;
 let timer = null;
 let filter = 'all';
-let demo = null; // { i, n, error } while "Run the demo set" is going
+let demo = null; // { i, n, error } while the sample batch is running
 let last = null; // { runs, stats }
 
 export function mountRuns(main) {
   root = main;
-  if (!last) root.innerHTML = html`<div class="page"><p class="muted"><span class="spin sm"></span> Loading runs…</p></div>`;
+  if (!last) root.innerHTML = html`<div class="page"><p class="loading muted"><span class="caret" aria-hidden="true"></span> Pulling the register…</p></div>`;
   else render();
   root.onclick = onClick;
   load();
@@ -31,7 +31,7 @@ async function load() {
     const [runs, stats] = await Promise.all([api('/api/runs'), api('/api/stats')]);
     last = { runs: Array.isArray(runs) ? runs : runs?.runs || [], stats: stats || {} };
   } catch (e) {
-    if (root) root.innerHTML = html`<div class="page"><div class="callout t-reject"><div class="callout-title">${icon('failed', 14)} Couldn't load runs</div><p>${e.message}. Check that the server is running, then reload.</p></div></div>`;
+    if (root) root.innerHTML = html`<div class="page"><div class="notice t-reject"><p class="notice-title">${pen('fail', 18)}Couldn't load the register</p><p>${e.message}. Check that the server is running, then reload.</p></div></div>`;
     return;
   }
   if (!root) return;
@@ -53,8 +53,8 @@ function render() {
   const focusKey = document.activeElement?.dataset?.fk;
   root.innerHTML = html`<div class="page runs-page">
     <header class="page-head">
-      <div><h1 class="page-title">Runs</h1><p class="page-sub">History, status and outputs across every invoice processed.</p></div>
-      ${demo ? html`<p class="demo-progress">${demo.error ? html`<span class="error-text">${demo.error}</span>` : html`<span class="spin sm"></span> Running the demo set · <span class="mono">${demo.i} of ${demo.n}</span>`}</p>` : ''}
+      <div><h1 class="page-title">Batch control</h1><p class="page-sub">Every invoice through the desk: what was decided, where it went and why.</p></div>
+      ${demo ? html`<p class="demo-progress" role="status">${demo.error ? html`<span class="error-text">${demo.error}</span>` : html`<span class="caret" aria-hidden="true"></span>Running the sample batch · <span class="typed">${demo.i} of ${demo.n}</span>`}</p>` : ''}
     </header>
     ${runs.length ? [overview(stats, runs), table(runs)] : empty()}
   </div>`;
@@ -66,68 +66,77 @@ function overview(s, runs) {
   const decided = (by.APPROVE || 0) + (by.REVIEW || 0) + (by.REJECT || 0);
   const running = runs.filter((r) => r.status === 'running').length;
   const awaiting = s.final?.awaiting ?? s.awaitingReview ?? 0;
-  const decidedByPerson = s.humanReviewed ?? Math.max(0, (by.REVIEW || 0) - awaiting);
+  const signedOff = s.humanReviewed ?? Math.max(0, (by.REVIEW || 0) - awaiting);
+  const rejected = s.final?.rejected ?? by.REJECT ?? 0;
+  const byPerson = Math.max(0, rejected - (by.REJECT || 0));
   const vals = Object.entries(s.valueApproved || {}).filter(([, v]) => v);
   const [first, ...rest] = vals;
-  const tile = (label, value, sub, tone) => html`<div class="kpi card">
-    <div class="kpi-label">${tone ? html`<span class="tone-text t-${DECISION[tone].tone}">${icon(DECISION[tone].icon, 12)}</span>` : ''}${label}</div>
-    <div class="kpi-value mono">${value}</div><div class="kpi-sub">${sub}</div></div>`;
+  const cell = (label, value, sub, mark) => html`<div class="tcell">
+    <dt class="fl">${mark ? html`<span class="tone-text t-${mark[1]}">${pen(mark[0], 14)}</span>` : ''}${label}</dt>
+    <dd class="tval">${value}</dd><dd class="tsub">${sub}</dd></div>`;
   const reasons = (s.topReasons || []).filter((x) => x.severity !== 'info' && x.count > 0);
   const max = Math.max(1, ...reasons.map((x) => x.count));
-  return html`<section class="overview ${reasons.length ? '' : 'solo'}" aria-label="Summary">
-    <div class="kpis">
-      ${tile('Invoices processed', s.total ?? runs.length, running ? `${running} running now` : `${decided} decided`)}
-      ${tile('Auto-approved', by.APPROVE ?? 0, decided ? `${pct(s.autoApprovalRate)} straight through` : 'Nothing decided yet', 'APPROVE')}
-      ${tile('On hold', awaiting, by.REVIEW ? `awaiting a person · ${decidedByPerson} decided` : 'Nothing waiting', 'REVIEW')}
-      ${tile('Rejected', by.REJECT ?? 0, 'Blocked before payment', 'REJECT')}
-      ${tile('Value approved', first ? money(first[1], first[0]) : money(0, 'USD'), rest.length ? html`<span class="mono">+ ${rest.map(([c, v]) => money(v, c)).join(' · ')}</span>` : 'Scheduled for payment')}
-      ${tile('Median read time', s.medianReadMs != null ? dur(s.medianReadMs) : '—', 'AI extraction; rules add < 50 ms')}
-    </div>
-    ${reasons.length ? html`<div class="card reasons-card">
-      <h2 class="section-title">Why invoices were held or rejected</h2>
-      <ul class="bars">${reasons.map((x) => { const sv = SEVERITY[x.severity] || SEVERITY.hold; return html`<li>
-        <span class="bar-label" title="${x.code} · ${sv.label}">${reasonLabel(x)}</span>
-        <span class="bar-track"><i class="t-${sv.tone}" style="width:${(x.count / max) * 100}%"></i></span>
-        <span class="bar-count mono">${x.count}</span></li>`; })}</ul>
-      <p class="legend"><span><i class="t-reject"></i>Blocks payment</span><span><i class="t-review"></i>Hold for review</span></p>
-    </div>` : ''}
+  return html`<section class="sheet batch" aria-labelledby="batch-title">
+    <div class="sheet-head"><h2 class="sheet-title" id="batch-title">Batch control sheet</h2><span class="sheet-note">Halden Robotics · Accounts Payable</span></div>
+    <dl class="tally">
+      ${cell('Invoices received', s.total ?? runs.length, running ? `${running} processing now` : `${decided} decided by the rules`)}
+      ${cell('Auto-approved', by.APPROVE ?? 0, decided ? `${pct(s.autoApprovalRate)} straight through` : 'Nothing decided yet', ['pass', 'approve'])}
+      ${cell('Awaiting a person', awaiting, by.REVIEW ? `${signedOff} of ${by.REVIEW} held signed off` : 'Nothing held', ['warn', 'review'])}
+      ${cell('Returned or rejected', rejected, by.REJECT || byPerson ? `${by.REJECT || 0} by the rules · ${byPerson} by a reviewer` : 'Nothing rejected', ['fail', 'reject'])}
+      ${cell('Value approved', first ? money(first[1], first[0]) : money(0, 'USD'), rest.length ? `+ ${rest.map(([c, v]) => money(v, c)).join(' · ')}` : 'Scheduled for payment')}
+      ${cell('Median read time', s.medianReadMs != null ? dur(s.medianReadMs) : '—', s.medianMs != null ? `AI read; the rules take ${dur(s.medianMs)}` : 'AI extraction')}
+    </dl>
+    ${reasons.length ? html`<section class="exceptions" aria-labelledby="exc-title">
+      <div class="exc-head"><h3 class="form-h" id="exc-title">Exceptions this batch</h3>
+        <p class="legend"><span><i class="t-reject"></i>Blocks payment</span><span><i class="t-review"></i>Held for review</span></p></div>
+      <ul class="exc-rows">${reasons.map((x) => { const sv = SEVERITY[x.severity] || SEVERITY.hold; return html`<li>
+        <span class="exc-mark tone-text t-${sv.tone}">${pen(sv.mark, 16, sv.label)}</span>
+        <span class="exc-label" title="${x.code} · ${sv.label}">${reasonLabel(x)}</span>
+        <span class="exc-bar"><i class="t-${sv.tone}" style="width:${(x.count / max) * 100}%"></i></span>
+        <span class="exc-count">${x.count}</span></li>`; })}</ul>
+      <p class="exc-foot">Each invoice counts once per kind of exception.</p>
+    </section>` : ''}
   </section>`;
 }
 
 function table(runs) {
   const f = FILTERS.find(([k]) => k === filter) || FILTERS[0];
   const rows = runs.filter(f[2]);
-  return html`<div class="filters" role="group" aria-label="Filter runs">${FILTERS.map(([k, label, fn]) => html`<button type="button" class="filter" data-filter="${k}" data-fk="f-${k}" aria-pressed="${k === filter ? 'true' : 'false'}">${label} <span class="mono filter-n">${runs.filter(fn).length}</span></button>`)}</div>
-  <div class="card tbl-card"><div class="tbl-wrap"><table class="tbl runs-tbl">
-    <thead><tr><th>Time</th><th>Vendor</th><th>Invoice #</th><th class="r">Amount</th><th>PO</th><th>Decision</th><th>Routed to</th><th>Main reason</th><th class="r">Duration</th></tr></thead>
-    <tbody>${rows.length ? rows.map(row) : html`<tr><td colspan="9" class="muted pad-cell">No runs match this filter.</td></tr>`}</tbody>
-  </table></div></div>`;
+  return html`<section class="register" aria-labelledby="reg-title">
+    <div class="reg-head"><h2 class="sheet-title" id="reg-title">Register</h2><span class="sheet-note">Newest first. Open a row to see its slip.</span></div>
+    <div class="ftabs" role="group" aria-label="Filter the register">${FILTERS.map(([k, label, fn]) => html`<button type="button" class="ftab-btn" data-filter="${k}" data-fk="f-${k}" aria-pressed="${k === filter ? 'true' : 'false'}">${label} <span class="ftab-n">${runs.filter(fn).length}</span></button>`)}</div>
+    <div class="sheet reg-sheet"><div class="tbl-wrap"><table class="tbl reg-tbl">
+      <thead><tr><th><span class="sr-only">Copy</span></th><th>Received</th><th>Vendor</th><th>Invoice no.</th><th class="r">Amount</th><th>PO</th><th>Outcome</th><th>Routed to</th><th>Main reason</th><th class="r">Time taken</th></tr></thead>
+      <tbody>${rows.length ? rows.map(row) : html`<tr><td colspan="10" class="muted pad-cell">Nothing in the register matches this filter.</td></tr>`}</tbody>
+    </table></div></div>
+  </section>`;
 }
 
 function row(r) {
   const reason = reasonOf(r);
   const sv = reason ? SEVERITY[reason.severity] || SEVERITY.hold : null;
-  const f = finalOf(r);
-  const human = f && f.by === 'reviewer' ? f : null;
+  const o = r.status === 'running' || r.status === 'error' ? null : outcomeOf(r);
+  const human = o?.human;
   return html`<tr class="run-row">
-    <td class="mono muted nowrap" title="${stamp(r.created_at)}">${ago(r.created_at)}</td>
-    <td class="cell-vendor"><a class="row-link" href="#/run/${encodeURIComponent(r.id)}" data-fk="row-${r.id}">${vendorOf(r)}</a><span class="cell-file mono" title="${r.filename}">${r.filename || ''}</span></td>
-    <td class="mono nowrap">${r.invoice_number || html`<span class="muted">—</span>`}</td>
+    <td class="cell-sw">${o ? copySwatch(o.copy) : ''}</td>
+    <td class="muted nowrap" title="${stamp(r.created_at)}">${ago(r.created_at)}</td>
+    <td class="cell-vendor"><a class="row-link" href="#/run/${encodeURIComponent(r.id)}" data-fk="row-${r.id}">${vendorOf(r)}</a><span class="cell-file" title="${r.filename}">${r.filename || ''}</span></td>
+    <td class="nowrap">${r.invoice_number || html`<span class="muted">—</span>`}</td>
     <td class="num">${r.total != null ? money(r.total, r.currency) : html`<span class="muted">—</span>`}</td>
-    <td class="mono nowrap">${r.po_number || html`<span class="muted">—</span>`}${r.po_inferred ? html`<span class="inferred" title="PO inferred from lines and amount">inferred</span>` : ''}</td>
-    <td class="nowrap">${decisionChip(r.decision, r.status)}${human ? html`<span class="reviewed-line tone-text t-${DECISION[human.decision]?.tone || 'neutral'}">${human.decision === 'APPROVE' ? 'Approved' : 'Rejected'} by ${human.reviewer || 'reviewer'}</span>` : ''}</td>
+    <td class="nowrap">${r.po_number || html`<span class="muted">—</span>`}${r.po_inferred ? html`<span class="inferred" title="PO inferred from lines and amount">inferred</span>` : ''}</td>
+    <td class="cell-outcome">${miniStamp(r)}${human ? html`<span class="reviewed-line">Held, then ${human.decision === 'APPROVE' ? 'approved' : 'rejected'} by ${human.reviewer || 'a reviewer'}</span>` : ''}${r.superseded_by ? html`<span class="reviewed-line">Replaced by a retry</span>` : ''}</td>
     <td class="nowrap">${routeOf(r) || html`<span class="muted">—</span>`}</td>
-    <td>${!reason ? html`<span class="muted">—</span>` : reason.code ? html`<span class="reason-cell" title="${reason.code}${reason.message ? ` · ${reason.message}` : ''}"><span class="tone-text t-${sv.tone}">${icon(sv.icon, 12)}</span>${reason.label || humanize(reason.code)}</span>` : html`<span class="reason-text" title="${reason.message}">${reason.message}</span>`}</td>
+    <td>${!reason ? html`<span class="muted">—</span>` : reason.code ? html`<span class="reason-cell" title="${reason.code}${reason.message ? ` · ${reason.message}` : ''}"><span class="tone-text t-${sv.tone}">${pen(sv.mark, 16, sv.label)}</span>${reason.label || humanize(reason.code)}</span>` : html`<span class="reason-text" title="${reason.message}">${reason.message}</span>`}</td>
     <td class="num muted">${r.status === 'running' ? '' : dur(r.ms)}</td>
   </tr>`;
 }
 
 function empty() {
-  return html`<div class="card empty-card">
-    <h2 class="empty-title">No runs yet.</h2>
-    <p class="muted">Process the nine sample invoices in order to fill the dashboard. Each run takes a few seconds.</p>
-    <button type="button" class="btn primary" data-demo ${demo ? 'disabled' : ''}>${demo ? html`<span class="spin sm"></span> Running ${demo.i} of ${demo.n}…` : 'Run the demo set'}</button>
-  </div>`;
+  return html`<section class="sheet empty-sheet" aria-labelledby="empty-title">
+    <h2 class="empty-title" id="empty-title">No invoices in this batch yet.</h2>
+    <p class="muted">Run the sample invoices in order to fill the register. Each takes a few seconds.</p>
+    <button type="button" class="btn primary" data-demo ${demo ? 'disabled' : ''}>${demo ? html`Running ${demo.i} of ${demo.n}…` : 'Run the sample batch'}</button>
+  </section>`;
 }
 
 function onClick(e) {
@@ -157,7 +166,7 @@ async function runDemo() {
     }
     demo = null;
   } catch (e) {
-    demo = { ...demo, error: `Demo set stopped: ${e.message}` };
+    demo = { ...demo, error: e.status === 429 ? e.message : `The sample batch stopped: ${e.message}` };
     setTimeout(() => { demo = null; if (root) render(); }, 6000);
   }
   runsChanged();

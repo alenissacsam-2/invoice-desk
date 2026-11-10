@@ -58,11 +58,27 @@ document.getElementById('reset').addEventListener('click', async (e) => {
     if (location.hash === '#/' || !location.hash) route(); else location.hash = '#/';
     refreshCount();
   } catch (err) {
-    alert(`Reset failed: ${err.message}`);
+    alert(err.status === 429 ? err.message : `Reset failed: ${err.message}`);
   } finally { btn.disabled = false; }
 });
 
 document.getElementById('skip').addEventListener('click', () => main.focus());
+
+// Theme: system (no attribute) or a stored light/dark choice. theme.js applies the stored one before first paint.
+const THEME_KEY = 'invoice-desk:theme';
+function showTheme() {
+  const t = document.documentElement.dataset.theme || 'system';
+  document.querySelectorAll('[data-theme-set]').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.themeSet === t)));
+}
+document.querySelector('.theme').addEventListener('click', (e) => {
+  const b = e.target.closest('[data-theme-set]');
+  if (!b) return;
+  const t = b.dataset.themeSet;
+  if (t === 'system') delete document.documentElement.dataset.theme; else document.documentElement.dataset.theme = t;
+  try { if (t === 'system') localStorage.removeItem(THEME_KEY); else localStorage.setItem(THEME_KEY, t); } catch { /* private mode */ }
+  showTheme();
+});
+showTheme();
 
 // Delegated copy buttons (see copyButton in util.js).
 document.addEventListener('click', (e) => { const b = e.target.closest('[data-copy]'); if (b) handleCopy(b); });

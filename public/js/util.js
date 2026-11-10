@@ -1,4 +1,4 @@
-// Shared helpers: safe HTML templating, API calls, formatting, icons.
+// Shared helpers: safe HTML templating, API calls, formatting, icons, stamps.
 
 class Raw { constructor(s) { this.s = s; } toString() { return this.s; } }
 export const raw = (s) => new Raw(String(s));
@@ -15,6 +15,8 @@ export function html(strings, ...vals) {
 }
 
 export async function api(path, opts = {}) {
+  // Every write carries X-Demo: the server rejects POSTs without it (CSRF guard).
+  if ((opts.method || 'GET').toUpperCase() !== 'GET') opts = { ...opts, headers: { ...opts.headers, 'X-Demo': '1' } };
   const res = await fetch(path, opts);
   const text = await res.text();
   let body = null;
@@ -28,6 +30,7 @@ export async function api(path, opts = {}) {
 }
 
 export const runsChanged = () => window.dispatchEvent(new Event('runs-changed'));
+export const reducedMotion = () => matchMedia('(prefers-reduced-motion: reduce)').matches;
 
 // ---- formatting ----
 const nf = new Map();
@@ -79,15 +82,15 @@ export function ago(iso) {
 }
 
 // ---- domain vocabulary ----
+// copy: the carbon copy an outcome lands on (white = AP file, canary = reviewer, pink = return to vendor).
 export const DECISION = {
-  APPROVE: { sub: 'Approved', chip: 'Approved', tone: 'approve', icon: 'passed' },
-  REVIEW: { sub: 'On hold for review', chip: 'On hold', tone: 'review', icon: 'warning' },
-  REJECT: { sub: 'Rejected', chip: 'Rejected', tone: 'reject', icon: 'failed' },
+  APPROVE: { sub: 'Approved', word: 'Approved', tone: 'approve', copy: 'white' },
+  REVIEW: { sub: 'On hold for review', word: 'On hold', tone: 'review', copy: 'canary' },
+  REJECT: { sub: 'Rejected', word: 'Void', tone: 'reject', copy: 'pink' },
 };
-export const STAGE_TONE = { pending: 'neutral', running: 'accent', passed: 'approve', warning: 'review', failed: 'reject', skipped: 'neutral' };
-export const CHECK_ICON = { pass: 'passed', warn: 'warning', fail: 'failed', info: 'info' };
+export const COPIES = [['white', 'White', 'AP file'], ['canary', 'Canary', 'Reviewer'], ['pink', 'Pink', 'Return to vendor']];
 export const CHECK_TONE = { pass: 'approve', warn: 'review', fail: 'reject', info: 'neutral' };
-export const SEVERITY = { block: { icon: 'failed', tone: 'reject', label: 'Blocks payment' }, hold: { icon: 'warning', tone: 'review', label: 'Hold' }, info: { icon: 'info', tone: 'neutral', label: 'Note' } };
+export const SEVERITY = { block: { mark: 'fail', tone: 'reject', label: 'Blocks payment' }, hold: { mark: 'warn', tone: 'review', label: 'Hold' }, info: { mark: 'info', tone: 'neutral', label: 'Note' } };
 
 const ACRONYM = { po: 'PO', id: 'ID', ai: 'AI', gst: 'GST', gstin: 'GSTIN' };
 /** QTY_EXCEEDS_RECEIPT → 'Qty exceeds receipt' (fallback when the server sends no label). */
@@ -107,35 +110,70 @@ export function finalOf(r) {
   return { decision, by, reviewer: rv?.reviewer ?? r.reviewer ?? null, at: f?.at ?? rv?.at ?? null, payment: f?.payment ?? null, review: rv };
 }
 
-export function decisionChip(decision, status) {
-  if (status === 'running') return html`<span class="chip t-accent"><span class="spin sm" aria-hidden="true"></span>Running</span>`;
-  if (status === 'error') return html`<span class="chip t-neutral">${icon('info', 12)}Couldn't finish</span>`;
+/** The stamp a run carries now: a person's decision on a held run replaces the system's hold. */
+export function outcomeOf(r, decision = r?.decision) {
+  const f = decision === 'REVIEW' ? finalOf(r) : null;
+  if (f && f.by === 'reviewer' && DECISION[f.decision]) {
+    const d = DECISION[f.decision];
+    return { decision: f.decision, word: f.decision === 'APPROVE' ? 'Approved' : 'Rejected', sub: 'By reviewer', tone: d.tone, copy: d.copy, human: f };
+  }
   const d = DECISION[decision];
-  if (!d) return html`<span class="chip">${decision || '—'}</span>`;
-  return html`<span class="chip t-${d.tone}">${icon(d.icon, 12)}${d.chip}</span>`;
+  return d ? { decision, word: d.word, sub: null, tone: d.tone, copy: d.copy, human: null } : null;
 }
 
-// ---- icons (inline SVG, 16-unit grid) ----
-const S = 'fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"';
+/** Small inked stamp for registers and the in-tray. */
+export function miniStamp(r, decision = r?.decision) {
+  if (r?.status === 'running') return html`<span class="mark-running"><span class="caret" aria-hidden="true"></span>Processing</span>`;
+  if (r?.status === 'error') return html`<span class="mark-error">Not finished</span>`;
+  const o = outcomeOf(r || {}, decision);
+  if (!o) return html`<span class="muted">—</span>`;
+  return html`<span class="mini-stamp t-${o.tone}">${o.word}</span>`;
+}
+
+/** The sheet-corner swatch in the copy colour. */
+export function copySwatch(copy) {
+  const c = COPIES.find(([k]) => k === copy);
+  return c ? html`<svg class="swatch sw-${copy}" width="14" height="18" viewBox="0 0 14 18" role="img" aria-label="${c[1]} copy, ${c[2]}"><path class="sw-sheet" d="M.75.75h8.5l4 4v12.5H.75z"/><path class="sw-fold" d="M9.25.75v4h4"/></svg>` : '';
+}
+
+// ---- icons: one line set, 20-unit grid, 1.5 stroke, round caps ----
 const P = {
-  passed: '<circle cx="8" cy="8" r="7" fill="currentColor"/><path class="ic-fg" d="M4.9 8.2l2.05 2.05L11.1 6"/>',
-  warning: '<path fill="currentColor" d="M6.86 2.2a1.32 1.32 0 0 1 2.28 0l5.68 9.98A1.32 1.32 0 0 1 13.68 14.2H2.32a1.32 1.32 0 0 1-1.14-1.98z"/><path class="ic-fg" d="M8 6.1v3.3"/><circle class="ic-dot" cx="8" cy="11.75" r=".95"/>',
-  failed: '<circle cx="8" cy="8" r="7" fill="currentColor"/><path class="ic-fg" d="M5.75 5.75l4.5 4.5M10.25 5.75l-4.5 4.5"/>',
-  pending: `<circle cx="8" cy="8" r="6.25" ${S}/>`,
-  skipped: `<circle cx="8" cy="8" r="6.25" ${S}/><path d="M5.5 8h5" ${S}/>`,
-  info: `<circle cx="8" cy="8" r="6.25" ${S} stroke-width="1.35"/><path d="M8 7.4v3.5" ${S}/><circle cx="8" cy="5.1" r=".9" fill="currentColor"/>`,
-  chev: `<path d="M6 3.5 10.5 8 6 12.5" ${S}/>`,
-  upload: `<path d="M8 10.2V2.9M5 5.8l3-3 3 3M2.75 10.2v1.8c0 .66.54 1.2 1.2 1.2h8.1c.66 0 1.2-.54 1.2-1.2v-1.8" ${S}/>`,
-  copy: `<rect x="5.6" y="5.6" width="7.9" height="7.9" rx="1.5" ${S}/><path d="M10.4 3.5v-.2c0-.66-.54-1.2-1.2-1.2H3.7c-.66 0-1.2.54-1.2 1.2v5.5c0 .66.54 1.2 1.2 1.2h.2" ${S}/>`,
-  check: `<path d="M3.5 8.4l2.9 2.9 6.1-6.6" ${S}/>`,
-  external: `<path d="M9.5 2.5h4v4M13.5 2.5 7.6 8.4M12 9.6v2.9c0 .66-.54 1.2-1.2 1.2H3.7c-.66 0-1.2-.54-1.2-1.2V5.4c0-.66.54-1.2 1.2-1.2h2.9" ${S}/>`,
-  arrowLeft: `<path d="M13 8H3.5M7.3 4.2 3.5 8l3.8 3.8" ${S}/>`,
-  arrowRight: `<path d="M3 8h9.5M8.7 4.2 12.5 8l-3.8 3.8" ${S}/>`,
-  doc: `<path d="M9.3 1.9H4.4c-.66 0-1.2.54-1.2 1.2v9.8c0 .66.54 1.2 1.2 1.2h7.2c.66 0 1.2-.54 1.2-1.2V5.4z" ${S}/><path d="M9.2 2v3.5h3.5M5.7 8.6h4.6M5.7 11h3" ${S}/>`,
+  // the seven stages
+  tray: '<path d="M10 2.75v6.5M7.25 6.5 10 9.25l2.75-2.75"/><path d="M2.75 11.25h4.1l1.15 2h4l1.15-2h4.1M2.75 11.25v4.5c0 .69.56 1.25 1.25 1.25h12c.69 0 1.25-.56 1.25-1.25v-4.5l-2-4.5h-1.6M2.75 11.25l2-4.5h1.6"/>',
+  read: '<path d="M8.75 17.25H5.25C4.56 17.25 4 16.69 4 16V4c0-.69.56-1.25 1.25-1.25h5.5L14 6v2.25"/><path d="M10.75 2.75V6H14M6.75 7.75h3M6.75 10.25h1.75"/><circle cx="13" cy="13.25" r="2.75"/><path d="m15 15.25 2.25 2.25"/>',
+  sum: '<path d="M14.75 4.25V3.5h-9.5l5.25 6.5-5.25 6.5h9.5v-.75"/>',
+  building: '<path d="M2.75 17.25h14.5M4.75 17.25V3.75c0-.55.45-1 1-1h5.5c.55 0 1 .45 1 1v13.5M12.25 7.75h3c.55 0 1 .45 1 1v8.5M7.25 6h2.5M7.25 9h2.5M7.25 12h2.5M14 11h.5M14 14h.5"/>',
+  dupe: '<path d="M7.25 5.5V4c0-.69.56-1.25 1.25-1.25h7.25c.69 0 1.25.56 1.25 1.25v8.75c0 .69-.56 1.25-1.25 1.25h-1.5"/><rect x="3.25" y="5.75" width="10.5" height="11.5" rx="1.25"/><path d="M6 9.5h5M6 12.25h3.25"/>',
+  link: '<rect x="2.75" y="2.75" width="6.5" height="8.5" rx="1"/><rect x="10.75" y="8.75" width="6.5" height="8.5" rx="1"/><path d="M6 11.25v2.25c0 .55.45 1 1 1h3.75M5 5.75h2M13 11.75h2M13 14.25h2"/>',
+  stamp: '<circle cx="10" cy="4.75" r="2"/><path d="M8.85 6.6 8.5 9.25M11.15 6.6l.35 2.65M4.5 9.25h11c.41 0 .75.34.75.75v2.75H3.75V10c0-.41.34-.75.75-.75zM4 16.25h12"/>',
+  // interface
+  upload: '<path d="M10 12.75V3.5M6.5 7 10 3.5 13.5 7M3.5 12.25v3c0 .69.56 1.25 1.25 1.25h10.5c.69 0 1.25-.56 1.25-1.25v-3"/>',
+  retry: '<path d="M3.75 10a6.25 6.25 0 1 0 1.9-4.5L3.75 7.4"/><path d="M3.75 3.5v3.9h3.9"/>',
+  copy: '<rect x="7" y="7" width="9.75" height="9.75" rx="1.5"/><path d="M13 7V4.5c0-.69-.56-1.25-1.25-1.25H4.5c-.69 0-1.25.56-1.25 1.25v7.25c0 .69.56 1.25 1.25 1.25H7"/>',
+  external: '<path d="M11.5 3.25h5.25V8.5M16.75 3.25 9.5 10.5M14.75 11.75v3.75c0 .69-.56 1.25-1.25 1.25h-9c-.69 0-1.25-.56-1.25-1.25v-9c0-.69.56-1.25 1.25-1.25h3.75"/>',
+  chev: '<path d="m7.75 4.75 5.25 5.25-5.25 5.25"/>',
+  clip: '<path d="M13.25 6.5v7.25a3.25 3.25 0 0 1-6.5 0V5a2.25 2.25 0 0 1 4.5 0v8.25a1.25 1.25 0 0 1-2.5 0V6.5"/>',
+  arrowRight: '<path d="M3.75 10h12.5M11.75 5.5l4.5 4.5-4.5 4.5"/>',
+  arrowLeft: '<path d="M16.25 10H3.75M8.25 5.5 3.75 10l4.5 4.5"/>',
+  doc: '<path d="M11.5 2.75H5.25C4.56 2.75 4 3.31 4 4v12c0 .69.56 1.25 1.25 1.25h9.5c.69 0 1.25-.56 1.25-1.25V7.25z"/><path d="M11.25 2.75v4.5h4.5M7 10.75h6M7 13.5h4"/>',
+  sun: '<circle cx="10" cy="10" r="3.25"/><path d="M10 2.5v1.5M10 16v1.5M2.5 10H4M16 10h1.5M4.7 4.7l1.06 1.06M14.24 14.24l1.06 1.06M4.7 15.3l1.06-1.06M14.24 5.76l1.06-1.06"/>',
+  moon: '<path d="M16.5 12.4A6.75 6.75 0 1 1 7.6 3.5a5.5 5.5 0 0 0 8.9 8.9z"/>',
+  monitor: '<rect x="2.75" y="3.5" width="14.5" height="10.25" rx="1.25"/><path d="M7 16.75h6M10 13.75v3"/>',
+  info: '<circle cx="10" cy="10" r="7.25"/><path d="M10 9.25v4.5"/><path d="M10 6.4h.01" stroke-width="2"/>',
 };
-export const icon = (name, size = 16, label) =>
-  raw(`<svg class="ic" width="${size}" height="${size}" viewBox="0 0 16 16" ${label ? `role="img" aria-label="${esc(label)}"` : 'aria-hidden="true" focusable="false"'}>${P[name] || ''}</svg>`);
-export const statusIcon = (status, size = 16) => (status === 'running' ? raw('<span class="spin" aria-hidden="true"></span>') : icon(status, size));
+export const icon = (name, size = 20, label) =>
+  raw(`<svg class="ic" width="${size}" height="${size}" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" ${label ? `role="img" aria-label="${esc(label)}"` : 'aria-hidden="true" focusable="false"'}>${P[name] || ''}</svg>`);
+
+// ---- pen marks: what a clerk writes in a tick box (pathLength lets CSS draw them in) ----
+const PEN = {
+  pass: '<path pathLength="1" d="M3.6 10.6c1.3.9 2.4 2.3 3.3 4.1C8.9 10 12 5.9 16.9 3"/>',
+  warn: '<path pathLength="1" d="M10.2 3.4c-.25 2.9-.35 5.6-.3 8.3"/><path pathLength="1" d="M9.9 15.6l.05.1"/>',
+  fail: '<path pathLength="1" d="M4.8 4.6c3.4 3.2 6.9 7 10.6 10.9"/><path pathLength="1" d="M15.3 4.3c-3.9 3.4-7.3 7.1-10.4 11.3"/>',
+  skip: '<path pathLength="1" d="M5 10.4c3.3-.35 6.6-.4 10-.1"/>',
+  info: '<path pathLength="1" d="M10 8.9v5.4"/><path pathLength="1" d="M10 5.6v.1"/>',
+};
+export const pen = (kind, size = 20, label) =>
+  raw(`<svg class="pen pen-${kind}" width="${size}" height="${size}" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round" ${label ? `role="img" aria-label="${esc(label)}"` : 'aria-hidden="true" focusable="false"'}>${PEN[kind] || ''}</svg>`);
 
 // ---- copy buttons: register text, render a button, one delegated handler in app.js ----
 const copies = new Map();
@@ -143,7 +181,7 @@ let copySeq = 0;
 export function copyButton(text, label = 'Copy') {
   const id = `c${++copySeq}`;
   copies.set(id, text);
-  return html`<button type="button" class="btn sm" data-copy="${id}">${icon('copy', 14)}<span>${label}</span></button>`;
+  return html`<button type="button" class="btn sm" data-copy="${id}">${icon('copy', 16)}<span>${label}</span></button>`;
 }
 export async function handleCopy(btn) {
   const text = copies.get(btn.dataset.copy) ?? '';

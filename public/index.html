@@ -5,27 +5,50 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="light dark">
 <title>Invoice Desk</title>
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20'%3E%3Crect width='20' height='20' rx='5' fill='%232F4BDB'/%3E%3Cpath d='M6 7h8M6 10h8M6 13h5' stroke='%23fff' stroke-width='1.6' stroke-linecap='round'/%3E%3C/svg%3E">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Crect width='24' height='24' rx='4' fill='%23F4F6FA'/%3E%3Cg transform='rotate(-6 12 12)' fill='none' stroke='%232347B5' stroke-linecap='round'%3E%3Crect x='3' y='5' width='18' height='14' rx='2' stroke-width='1.8'/%3E%3Cpath d='M8.3 12.2c.8.5 1.4 1.2 1.9 2.2 1.2-2.6 2.9-4.4 5.5-5.8' stroke-width='1.9'/%3E%3C/g%3E%3C/svg%3E">
+<script src="/theme.js"></script>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Big+Shoulders+Display:wght@700;800;900&family=Courier+Prime:ital,wght@0,400;0,700;1,400&family=Public+Sans:wght@400;500;600;700&display=swap">
 <link rel="stylesheet" href="/styles.css">
 <script type="module" src="/app.js"></script>
 </head>
 <body>
+<svg class="defs" width="0" height="0" aria-hidden="true" focusable="false">
+  <!-- Rubber-stamp ink: rough edges from a fine displacement, then speckled coverage from a thresholded grain. -->
+  <filter id="ink" x="-6%" y="-10%" width="112%" height="120%" color-interpolation-filters="sRGB">
+    <feTurbulence type="fractalNoise" baseFrequency="0.55" numOctaves="2" seed="4" result="warp"/>
+    <feDisplacementMap in="SourceGraphic" in2="warp" scale="2.4" xChannelSelector="R" yChannelSelector="G" result="rough"/>
+    <feTurbulence type="fractalNoise" baseFrequency="0.85 0.6" numOctaves="2" seed="17" result="grain"/>
+    <feColorMatrix in="grain" type="matrix" values="0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  -3.2 0 0 0 2.55" result="speck"/>
+    <feComposite in="rough" in2="speck" operator="in"/>
+  </filter>
+  <filter id="ink-sm" x="-6%" y="-12%" width="112%" height="124%" color-interpolation-filters="sRGB">
+    <feTurbulence type="fractalNoise" baseFrequency="0.9" numOctaves="1" seed="9" result="grain"/>
+    <feColorMatrix in="grain" type="matrix" values="0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  -1.7 0 0 0 1.85" result="speck"/>
+    <feComposite in="SourceGraphic" in2="speck" operator="in"/>
+  </filter>
+</svg>
 <button type="button" class="skip" id="skip">Skip to content</button>
 <header class="top">
   <a class="brand" href="#/" aria-label="Invoice Desk, home">
-    <svg class="brand-mark" width="20" height="20" viewBox="0 0 20 20" aria-hidden="true"><rect width="20" height="20" rx="5"/><path d="M6 7h8M6 10h8M6 13h5"/></svg>
+    <svg class="brand-mark" width="26" height="26" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><g transform="rotate(-6 12 12)" fill="none" stroke="currentColor" stroke-linecap="round"><rect x="2.5" y="4.5" width="19" height="15" rx="2" stroke-width="1.6"/><rect x="5" y="7" width="14" height="10" rx="1" stroke-width=".8"/><path d="M8.3 12.2c.8.5 1.4 1.2 1.9 2.2 1.2-2.6 2.9-4.4 5.5-5.8" stroke-width="1.7"/></g></svg>
     <span class="brand-name">Invoice Desk</span>
   </a>
   <span class="brand-org">Halden Robotics · Accounts Payable</span>
   <nav class="nav" aria-label="Main">
     <a href="#/" data-nav="process">Process</a>
-    <a href="#/runs" data-nav="runs">Runs <span class="nav-count mono" id="runs-count"></span></a>
+    <a href="#/runs" data-nav="runs">Runs <span class="nav-count" id="runs-count"></span></a>
     <a href="#/data" data-nav="data">Procurement data</a>
   </nav>
-  <button type="button" class="btn ghost reset" id="reset">Reset demo</button>
+  <div class="top-tools">
+    <div class="theme" role="group" aria-label="Colour theme">
+      <button type="button" data-theme-set="system" title="Match the system"><svg class="ic" width="18" height="18" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><rect x="2.75" y="3.5" width="14.5" height="10.25" rx="1.25"/><path d="M7 16.75h6M10 13.75v3"/></svg><span class="sr-only">System theme</span></button>
+      <button type="button" data-theme-set="light" title="Light"><svg class="ic" width="18" height="18" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><circle cx="10" cy="10" r="3.25"/><path d="M10 2.5v1.5M10 16v1.5M2.5 10H4M16 10h1.5M4.7 4.7l1.06 1.06M14.24 14.24l1.06 1.06M4.7 15.3l1.06-1.06M14.24 5.76l1.06-1.06"/></svg><span class="sr-only">Light theme</span></button>
+      <button type="button" data-theme-set="dark" title="Dark"><svg class="ic" width="18" height="18" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M16.5 12.4A6.75 6.75 0 1 1 7.6 3.5a5.5 5.5 0 0 0 8.9 8.9z"/></svg><span class="sr-only">Dark theme</span></button>
+    </div>
+    <button type="button" class="btn ghost reset" id="reset">Reset demo</button>
+  </div>
 </header>
 <main id="main" tabindex="-1"></main>
 </body>
