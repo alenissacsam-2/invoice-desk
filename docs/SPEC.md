@@ -148,3 +148,48 @@ Run order for the demo: 1 → 6 (duplicate needs #1 in the ledger), 4 → 5 (spl
 - **PO-2026-0415** (V007, goods, "Daniel Ortiz", net 2,140.00 USD): L1 `BRO-A5-500` Trade-show brochures A5, 500 pcs ×1 @1,240.00; L2 `BNR-RU-85` Roll-up banner 85×200cm ×3 @300.00. GRN-5544 received all. Invoice has no number and no date, references PO-2026-0415, total 2,140.00 + tax 8.5% 181.90 = 2,321.90.
 - **PO-2026-IN-0031** (V006, buyer Halden Robotics India Pvt Ltd, goods, "Ananya Rao", INR net 99,000.00): L1 `LED-PNL-40W` LED panel light 2x2 40W ×60 @1,450.00 (87,000.00); L2 `SVC-INSTALL` Installation labour ×1 @12,000.00. GRN-IN-0210 received all. Invoice **SE/2026-27/0457**, 2026-11-04, taxable 99,000.00, CGST 9% 8,910.00, SGST 9% 8,910.00, total **₹1,16,820.00**. GSTIN 29AABCS1234F1Z5. Treat L2 as goods-line for receipt (receipted as qty 1).
 - V001–V007 are all active. Add **V008 Globex Trading Co** (status **blocked**) with no POs, for uploaded test files.
+
+## v2 changes (after the first independent review)
+The backend and the frontend both build against this.
+
+**Reasons and labels**
+- Every reason in `result.reasons` gains `label`: a short plain-English name, e.g. "Billed more than received". The UI shows labels; the raw code appears only as a tooltip or in muted mono.
+- `result.primaryReason` = `{code, severity, label, message}` is the one reason that drove the decision. Rejects use the block reason (e.g. DUPLICATE_INVOICE, never DUPLICATE_FILE). The run list's `main_reason` uses it.
+
+**Human review**
+- `POST /api/runs/:id/review` takes `{action:'approve'|'reject', reviewer (required, ≥2 chars), note (required, ≥3 chars), callbackVerified (boolean)}`. Approving a run whose reasons include BANK_DETAILS_CHANGED or SUSPICIOUS_INSTRUCTIONS also requires `callbackVerified: true`. Failures return 400 with a human message.
+- The run stores `review = {action, reviewer, note, callbackVerified, at}` and `final = {decision:'APPROVE'|'REJECT', by:'reviewer', at, payment|null}`. Approval schedules payment the same way the system does.
+- Runs the system decided get `final = {decision, by:'system', payment}` at decision time, except REVIEW, which has `final = null` until a person decides.
+- List rows gain `final_decision`, `reviewer`.
+
+**Retry**
+- `POST /api/runs/:id/retry` re-runs the same file fresh and returns `{id}` of a new run. It's allowed for any finished or error run.
+
+**Errors**
+- `result.errorKind` ∈ `unreadable_file` (Gemini 400 on the document, a corrupt or password-protected PDF; no fallback-model retry) | `ai_unavailable` (429/5xx after retries and fallback) | `internal`.
+- `headline` and `nextActions` match the kind. unreadable_file says: "Couldn't open this file — it may be corrupt or password-protected. Ask the vendor for a new copy."
+
+**Credit notes**
+- `document_type: credit_note` (or a negative total) is no longer NOT_AN_INVOICE. It raises `CREDIT_NOTE` (hold, route AP clerk): "Credit note for −$313.57 from Acme. Nothing to pay; apply it against the vendor's next payment." If it references an invoice in the ledger, the message names it. No PO quantity checks.
+
+**Suspicious instructions (AI-era control)**
+- `SUSPICIOUS_INSTRUCTIONS` (hold, Treasury & Security) fires when a notice or printed text tries to steer processing: "pre-approved", "approve immediately", "AI"/"automated system" instructions, "do not verify", urgency plus payment pressure. The extraction prompt asks Gemini to copy any such text into `notices` verbatim and never to obey it.
+- A remit/contact email domain that is a lookalike of the master domain (edit distance ≤ 2 on the core label, or same letters plus a hyphen or digit swap) becomes `REMIT_DOMAIN_LOOKALIKE` (hold, Treasury & Security), even without bank details. A merely different domain stays a warning.
+
+**Timing**
+- The extraction cache stores the original `latencyMs` and `model`. The extract stage `data` gains `originalLatencyMs` when cached.
+- `/api/stats` gains `medianReadMs`: the median of fresh read times, falling back to each cached run's original read time.
+
+**Stats**
+- `/api/stats` returns `{total, byDecision (system decision), final:{approved, rejected, awaiting}, humanReviewed, autoApprovalRate, valueApproved (final approved, per currency), medianMs, medianReadMs, topReasons:[{code,label,severity,count}]}`.
+- topReasons counts **invoices**, not reasons: one invoice with two QTY lines counts once.
+
+**Samples**
+- `/api/samples` items gain `processed: {runId, decision, final_decision}|null`, taken from the latest run of that file still in the DB.
+
+**Copy fixes**
+- No doubled parentheses around phone numbers. Intake summary like "JPEG image (photo)" or "PDF, 1 page, scanned".
+- Duplicate messages never say "X is the same invoice as X" when the numbers are identical; they say "was already processed on <date> (run r_…)".
+- Don't say "will not be paid again" if the original is only on hold.
+- No courtesy email when the duplicate is the same file (our own re-upload). Draft one only when the vendor re-sent a different file.
+- DUPLICATE_FILE is folded into DUPLICATE_INVOICE when both fire.
