@@ -1,0 +1,118 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+
+// Isolate the DB and pin the key/models before config.js reads the env.
+const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'extract-test-'));
+process.env.DB_PATH = path.join(tmp, 'app.db');
+process.env.GEMINI_API_KEY = 'test-key';
+process.env.GEMINI_MODEL = 'model-a';
+process.env.GEMINI_FALLBACK_MODEL = 'model-b';
+const { sniff, sha256, toNum, normalizeExtraction, extractInvoice, RETRY } = await import('../src/extract.js');
+RETRY.baseMs = 0;
+
+const pdf = (body) => Buffer.from(`%PDF-1.4\n${body}\n%%EOF`, 'latin1');
+
+test('sniff: digital PDF with fonts and 2 pages', () => {
+  const r = sniff(pdf('1 0 obj << /Type /Pages /Count 2 >> endobj 2 0 obj << /Type /Page /Resources << /Font << /F1 5 0 R >> >> >> endobj 3 0 obj <</Type/Page>> endobj'));
+  assert.deepEqual(r, { mime: 'application/pdf', pages: 2, hasTextLayer: true, kind: 'digital_text' });
+});
+
+test('sniff: scanned PDF without fonts', () => {
+  const r = sniff(pdf('1 0 obj << /Type /Pages >> endobj 2 0 obj << /Type /Page /Resources << /XObject << /Im1 4 0 R >> >> >> endobj'));
+  assert.equal(r.pages, 1);
+  assert.equal(r.hasTextLayer, false);
+  assert.equal(r.kind, 'scanned_image');
+});
+
+test('sniff: PNG, JPEG, junk', () => {
+  assert.equal(sniff(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0])).mime, 'image/png');
+  assert.equal(sniff(new Uint8Array([0xff, 0xd8, 0xff, 0xe0, 0])).mime, 'image/jpeg');
+  assert.equal(sniff(Buffer.from('hello world')).mime, null);
+  assert.equal(sniff(Buffer.alloc(0)).mime, null);
+});
+
+test('sniff: real samples (03 must be scanned)', () => {
+  const dir = path.resolve(import.meta.dirname, '..', 'samples');
+  const files = fs.existsSync(dir) ? fs.readdirSync(dir).filter((f) => f.endsWith('.pdf')) : [];
+  for (const f of files) {
+    const r = sniff(fs.readFileSync(path.join(dir, f)));
+    assert.equal(r.mime, 'application/pdf', f);
+    assert.ok(r.pages >= 1, f);
+    assert.equal(r.kind, f.startsWith('03') ? 'scanned_image' : 'digital_text', f);
+  }
+});
+
+test('sha256', () => {
+  assert.equal(sha256(Buffer.from('abc')), 'ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad');
+});
+
+test('toNum coerces formatted amounts', () => {
+  assert.equal(toNum('1,16,820.00'), 116820);
+  assert.equal(toNum('$4,111.07'), 4111.07);
+  assert.equal(toNum('₹ 8,910.00'), 8910);
+  assert.equal(toNum('(18.75)'), -18.75);
+  assert.equal(toNum('-5'), -5);
+  assert.equal(toNum(12), 12);
+  assert.equal(toNum(''), null);
+  assert.equal(toNum('n/a'), null);
+  assert.equal(toNum('1.2.3'), null);
+  assert.equal(toNum(NaN), null);
+});
+
+test('normalizeExtraction fills defaults and coerces', () => {
+  const x = normalizeExtraction({
+    is_invoice: true, document_type: 'invoice', vendor: { name: 'Sharma' }, currency: 'inr',
+    invoice_date: '04/11/2026', line_items: [{ description: 'LED', quantity: '60', unit_price: '1,450.00', amount: '87,000.00' }],
+    total: '1,16,820.00', confidence: { total: 1.4, invoice_number: 'x' },
+  });
+  assert.equal(x.total, 116820);
+  assert.equal(x.currency, 'INR');
+  assert.equal(x.invoice_date, null); // not ISO -> null rather than garbage
+  assert.deepEqual(x.line_items[0], { description: 'LED', item_code: null, quantity: 60, unit_price: 1450, amount: 87000 });
+  assert.deepEqual(x.tax_lines, []);
+  assert.deepEqual(x.notices, []);
+  assert.equal(x.bank_details, null);
+  assert.equal(x.confidence.total, 1);
+  assert.equal(x.confidence.invoice_number, 0);
+  assert.throws(() => normalizeExtraction({ foo: 1 }), /is_invoice/);
+  assert.throws(() => normalizeExtraction(null));
+});
+
+const okBody = (obj) => JSON.stringify({ candidates: [{ content: { parts: [{ text: JSON.stringify(obj) }] }, finishReason: 'STOP' }] });
+
+test('extractInvoice: retries 503 then falls back to the second model, then caches', async (t) => {
+  const calls = [];
+  t.mock.method(globalThis, 'fetch', async (url, init) => {
+    calls.push(url);
+    assert.equal(init.headers['x-goog-api-key'], 'test-key');
+    if (url.includes('model-a')) return new Response('{"error":{"message":"overloaded"}}', { status: 503 });
+    return new Response(okBody({ is_invoice: true, document_type: 'invoice', vendor: { name: 'Acme' }, total: '4,111.07' }), { status: 200 });
+  });
+  const bytes = pdf('/Type /Page /Font retry-test');
+  const r = await extractInvoice(bytes, 'application/pdf');
+  assert.equal(r.model, 'model-b');
+  assert.equal(r.cached, false);
+  assert.equal(r.extraction.total, 4111.07);
+  assert.deepEqual(r.attempts.map((a) => [a.model, a.status]), [['model-a', 503], ['model-a', 503], ['model-b', 200]]);
+  assert.equal(calls.length, 3);
+
+  const again = await extractInvoice(bytes, 'application/pdf');
+  assert.equal(again.cached, true);
+  assert.equal(calls.length, 3);
+
+  // fresh + total failure -> cached copy with a reason
+  t.mock.method(globalThis, 'fetch', async () => new Response('{}', { status: 503 }));
+  const stale = await extractInvoice(bytes, 'application/pdf', { fresh: true });
+  assert.equal(stale.cached, true);
+  assert.match(stale.fallbackReason, /unavailable \(503\)/);
+});
+
+test('extractInvoice: 400 is not retried; total failure without cache throws a human message', async (t) => {
+  let n = 0;
+  t.mock.method(globalThis, 'fetch', async () => { n++; return new Response('{"error":{"message":"bad"}}', { status: n === 1 ? 400 : 503 }); });
+  await assert.rejects(extractInvoice(pdf('/Font no-cache'), 'application/pdf'), /Gemini is unavailable \(503\) after retries/);
+  assert.equal(n, 3); // model-a once (400), model-b twice (503)
+});
