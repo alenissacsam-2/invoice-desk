@@ -6,7 +6,7 @@ import { PATHS } from './config.js';
 let db;
 
 const NUMERIC = new Set(['qty', 'unit_price', 'net_total', 'qty_received', 'line_no', 'payment_terms_days']);
-const JSON_COLS = ['stages', 'extraction', 'result', 'review'];
+const JSON_COLS = ['stages', 'extraction', 'result', 'review', 'final'];
 
 const MASTER = {
   vendors: ['vendors.csv', `vendor_id TEXT PRIMARY KEY, name TEXT, aliases TEXT, tax_id TEXT, country TEXT, currency TEXT,
@@ -54,14 +54,37 @@ export function openDb() {
   db.exec(`
     CREATE TABLE IF NOT EXISTS runs (id TEXT PRIMARY KEY, created_at TEXT, filename TEXT, file_sha TEXT, mime TEXT, bytes BLOB,
       source TEXT, status TEXT, decision TEXT, headline TEXT, vendor_id TEXT, invoice_number TEXT, total REAL, currency TEXT,
-      po_number TEXT, ms INTEGER, stages TEXT, extraction TEXT, result TEXT, review TEXT);
+      po_number TEXT, ms INTEGER, stages TEXT, extraction TEXT, result TEXT, review TEXT, final TEXT, retry_of TEXT);
     CREATE TABLE IF NOT EXISTS ledger (id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT, vendor_id TEXT, invoice_number TEXT,
       invoice_number_norm TEXT, invoice_date TEXT, net REAL, total REAL, currency TEXT, po_number TEXT, lines TEXT, status TEXT, created_at TEXT);
-    CREATE TABLE IF NOT EXISTS extraction_cache (file_sha TEXT PRIMARY KEY, model TEXT, json TEXT, created_at TEXT);
+    CREATE TABLE IF NOT EXISTS extraction_cache (file_sha TEXT PRIMARY KEY, model TEXT, json TEXT, created_at TEXT, latency_ms INTEGER);
   `);
+  migrate();
   for (const [table, [, cols]] of Object.entries(MASTER)) db.exec(`CREATE TABLE IF NOT EXISTS ${table} (${cols})`);
   loadMaster();
   return db;
+}
+
+/** Bring a DB from an earlier schema (e.g. an old seed.db) up to date: add missing columns, backfill `final`. */
+function migrate() {
+  const has = (table, col) => db.prepare(`PRAGMA table_info(${table})`).all().some((c) => c.name === col);
+  if (!has('runs', 'retry_of')) db.exec('ALTER TABLE runs ADD COLUMN retry_of TEXT');
+  if (!has('extraction_cache', 'latency_ms')) {
+    db.exec('ALTER TABLE extraction_cache ADD COLUMN latency_ms INTEGER');
+    // Recover the original read time from the latest fresh (uncached) run of the same file, if one is still around.
+    db.exec(`UPDATE extraction_cache SET latency_ms = (SELECT json_extract(s.value, '$.data.latencyMs') FROM runs r, json_each(r.stages) s
+      WHERE r.file_sha = extraction_cache.file_sha AND json_extract(s.value, '$.key') = 'extract' AND json_extract(s.value, '$.data.cached') = 0
+      ORDER BY r.created_at DESC LIMIT 1)`);
+  }
+  if (!has('runs', 'final')) {
+    db.exec('ALTER TABLE runs ADD COLUMN final TEXT');
+    // Older runs: the system's own APPROVE/REJECT, or the reviewer's action, is the final outcome.
+    db.exec(`UPDATE runs SET final = json_object('decision', decision, 'by', 'system', 'at', created_at, 'payment', json(json_extract(result, '$.payment')))
+      WHERE status = 'done' AND decision IN ('APPROVE', 'REJECT');
+    UPDATE runs SET final = json_object('decision', CASE json_extract(review, '$.action') WHEN 'approve' THEN 'APPROVE' ELSE 'REJECT' END,
+      'by', 'reviewer', 'at', json_extract(review, '$.at'), 'payment', NULL)
+      WHERE review IS NOT NULL AND status = 'done' AND decision = 'REVIEW';`);
+  }
 }
 
 function loadMaster() {
@@ -120,10 +143,10 @@ export function updateRun(id, patch) {
     .run(...keys.map((k) => encode(k, patch[k])), id);
 }
 
-const RUN_COLS = 'id, created_at, filename, file_sha, mime, source, status, decision, headline, vendor_id, invoice_number, total, currency, po_number, ms';
+const RUN_COLS = 'id, created_at, filename, file_sha, mime, source, status, decision, headline, vendor_id, invoice_number, total, currency, po_number, ms, retry_of';
 
 export function getRun(id) {
-  return parseRun(openDb().prepare(`SELECT ${RUN_COLS}, stages, extraction, result, review FROM runs WHERE id = ?`).get(id));
+  return parseRun(openDb().prepare(`SELECT ${RUN_COLS}, stages, extraction, result, review, final FROM runs WHERE id = ?`).get(id));
 }
 
 export function getRunFile(id) {
@@ -152,9 +175,9 @@ export function getCachedExtraction(sha) {
   return r ? { ...r, json: JSON.parse(r.json) } : null;
 }
 
-export function putCachedExtraction(sha, model, json) {
-  openDb().prepare('INSERT OR REPLACE INTO extraction_cache (file_sha, model, json, created_at) VALUES (?, ?, ?, ?)')
-    .run(sha, model, typeof json === 'string' ? json : JSON.stringify(json), new Date().toISOString());
+export function putCachedExtraction(sha, model, json, latencyMs = null) {
+  openDb().prepare('INSERT OR REPLACE INTO extraction_cache (file_sha, model, json, created_at, latency_ms) VALUES (?, ?, ?, ?, ?)')
+    .run(sha, model, typeof json === 'string' ? json : JSON.stringify(json), new Date().toISOString(), latencyMs);
 }
 
 export function resetRuns() {

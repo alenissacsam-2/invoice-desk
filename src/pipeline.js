@@ -4,8 +4,8 @@ import crypto from 'node:crypto';
 import { today } from './config.js';
 import * as db from './db.js';
 import { sniff, sha256, extractInvoice } from './extract.js';
-import { validate, matchVendor, matchPO, checkDuplicates, normalizeInvoiceNumber, normalizePO, invoiceTotals, tokenSim } from './rules.js';
-import { decide } from './decide.js';
+import { validate, matchVendor, matchPO, checkDuplicates, checkCreditNote, isCreditNote, normalizeInvoiceNumber, normalizePO, invoiceTotals, tokenSim } from './rules.js';
+import { decide, schedulePayment, LABELS } from './decide.js';
 
 export const STAGES = [
   ['intake', 'Intake'], ['extract', 'Read the invoice'], ['validate', 'Validate'], ['vendor', 'Vendor check'],
@@ -41,13 +41,15 @@ export function subscribe(id, fn) {
 
 /** List-row shape shared by GET /api/runs and the SSE `run` event. */
 export function summarize(run) {
-  const { stages, extraction, result, review, ...row } = run;
-  const main = result?.reasons?.find((r) => r.severity === 'block' || r.severity === 'hold');
+  const { stages, extraction, result, review, final, ...row } = run;
+  // primaryReason is what drove the decision; older runs predate it, so fall back to the first block, else the first hold.
+  const main = result?.primaryReason ?? result?.reasons?.find((r) => r.severity === 'block') ?? result?.reasons?.find((r) => r.severity === 'hold');
   const vendorStage = stages?.find((s) => s.key === 'vendor');
   const poStage = stages?.find((s) => s.key === 'po_match');
   return {
     ...row, route: result?.route ?? null, mainReason: main?.message ?? null, review: review?.action ?? null,
-    main_reason: main ? { code: main.code, severity: main.severity, message: main.message } : null,
+    main_reason: main ? { code: main.code, severity: main.severity, label: main.label ?? LABELS[main.code] ?? main.code, message: main.message } : null,
+    final_decision: final?.decision ?? null, reviewer: review?.reviewer ?? null,
     vendor_name: vendorStage?.data?.vendor?.name ?? extraction?.vendor?.name ?? null,
     po_inferred: Boolean(poStage?.data?.inferred),
   };
@@ -55,7 +57,7 @@ export function summarize(run) {
 
 // ---------- run ----------
 /** Insert a run and process it in the background. `extractor` replaces Gemini (tests). Returns the run id. */
-export function startRun({ bytes, mime, filename, source = 'upload', fresh = false, extractor = extractInvoice }) {
+export function startRun({ bytes, mime, filename, source = 'upload', fresh = false, extractor = extractInvoice, retryOf = null }) {
   const id = newId();
   const buf = Buffer.from(bytes ?? []);
   const sn = sniff(buf);
@@ -63,17 +65,19 @@ export function startRun({ bytes, mime, filename, source = 'upload', fresh = fal
   const stages = STAGES.map(([key, label]) => ({ key, label, status: 'pending', startedAt: null, endedAt: null, ms: null, summary: null, checks: [], data: null }));
   db.insertRun({
     id, created_at: iso(), filename: filename || 'upload', file_sha: sha, mime: sn.mime || mime || 'application/octet-stream',
-    bytes: buf, source, status: 'running', stages,
+    bytes: buf, source, status: 'running', stages, retry_of: retryOf,
   });
-  execute({ id, buf, sn, sha, fresh, extractor, stages }).catch((e) => console.error(`run ${id}:`, e));
+  execute({ id, buf, sn, sha, fresh, extractor, stages, retryOf }).catch((e) => console.error(`run ${id}:`, e));
   return id;
 }
 
-async function execute({ id, buf, sn, sha, fresh, extractor, stages }) {
+async function execute({ id, buf, sn, sha, fresh, extractor, stages, retryOf }) {
   const TODAY = today();
+  // A retry replaces its original: never compare the file or the invoice with the run being retried.
+  const ledgerNow = () => db.getLedger().filter((r) => !retryOf || r.run_id !== retryOf);
   const st = (key) => stages.find((s) => s.key === key);
   const save = (s) => { db.updateRun(id, { stages }); emit(id, 'stage', s); };
-  let ex = null, v = null, mv = null, dup = null, mp = null;
+  let ex = null, v = null, mv = null, dup = null, mp = null, cn = null;
   const reasons = [];
 
   // Every stage: running → work → status. A throw marks the stage failed and ends the run as error.
@@ -85,7 +89,7 @@ async function execute({ id, buf, sn, sha, fresh, extractor, stages }) {
     let out;
     try { out = await fn(); } catch (e) {
       out = { status: 'failed', fatal: true, summary: `Error: ${e.message}`, checks: [{ label: 'Unexpected error', status: 'fail', detail: e.message }],
-        headline: `Something went wrong in ${s.label.toLowerCase()}: ${e.message.replace(/\.$/, '')} — retry, or process this invoice by hand.`, error: e.message };
+        headline: `Something went wrong in ${s.label.toLowerCase()}: ${e.message.replace(/\.$/, '')} — retry, or process this invoice by hand.`, error: e.message, errorKind: 'internal' };
     }
     s.ms = Math.round(performance.now() - t);
     const status = out.status ?? ((out.reasons ?? []).some((r) => r.severity !== 'info') ? 'warning' : 'passed');
@@ -109,7 +113,7 @@ async function execute({ id, buf, sn, sha, fresh, extractor, stages }) {
     finish({
       status: 'error', headline: out.headline,
       result: {
-        decision: 'REVIEW', error: true, headline: out.headline, reasons: [],
+        decision: 'REVIEW', error: true, errorKind: out.errorKind ?? 'internal', headline: out.headline, reasons: [], primaryReason: null,
         explanation: `${String(out.error).replace(/\.$/, '')}. Nothing was decided and nothing will be paid.`,
         route: 'AP clerk', nextActions: out.nextActions ?? ['Retry the run in a minute.', 'If it keeps failing, process this invoice by hand.'],
         payment: null, vendorEmail: null,
@@ -120,22 +124,24 @@ async function execute({ id, buf, sn, sha, fresh, extractor, stages }) {
   // 1. intake
   let priorShas = [];
   let out = await runStage('intake', () => {
-    const prior = db.listRuns().filter((r) => r.id !== id && r.status === 'done');
+    const prior = db.listRuns().filter((r) => r.id !== id && r.id !== retryOf && r.status === 'done');
     priorShas = prior.map((r) => r.file_sha);
     const seenBefore = prior.find((r) => r.file_sha === sha)?.id ?? null;
     const kb = buf.length < 1024 * 1024 ? `${Math.max(1, Math.round(buf.length / 1024))} KB` : `${(buf.length / 1024 / 1024).toFixed(1)} MB`;
     const data = { bytes: buf.length, mime: sn.mime, pages: sn.pages, kind: sn.kind, sha256: sha, seenBefore };
     if (!sn.mime) {
-      return { status: 'failed', fatal: true, summary: "This file isn't a PDF or image", data, error: "This file isn't a PDF or image",
+      return { status: 'failed', fatal: true, summary: "This file isn't a PDF or image", data, error: "This file isn't a PDF or image", errorKind: 'unreadable_file',
         checks: [{ label: 'File type', status: 'fail', detail: 'Not a PDF, PNG or JPEG' }],
         headline: "Couldn't read the document: this file isn't a PDF or image — upload a PDF, PNG or JPEG.",
         nextActions: ['Upload the invoice as a PDF, PNG or JPEG.'] };
     }
     const isPdf = sn.mime === 'application/pdf';
-    const kindTxt = sn.kind === 'digital_text' ? 'digital text' : sn.kind === 'scanned_image' ? 'scanned, no text layer' : 'image';
+    // "PDF, 1 page, scanned" / "JPEG image (photo)"; size and hash are in the checks.
+    const what = isPdf ? `PDF, ${plural(sn.pages, 'page')}, ${sn.kind === 'digital_text' ? 'digital' : 'scanned'}`
+      : sn.mime === 'image/jpeg' ? 'JPEG image (photo)' : 'PNG image (scan or screenshot)';
     return {
       status: seenBefore ? 'warning' : 'passed', data,
-      summary: `${TYPE_NAME[sn.mime]}, ${isPdf ? `${plural(sn.pages, 'page')}, ` : ''}${kindTxt}, ${kb}${seenBefore ? ' — seen before' : ''}`,
+      summary: `${what}${seenBefore ? ' — seen before' : ''}`,
       checks: [
         { label: 'File type', status: 'pass', detail: TYPE_NAME[sn.mime] },
         { label: 'Size', status: 'pass', detail: kb },
@@ -152,13 +158,17 @@ async function execute({ id, buf, sn, sha, fresh, extractor, stages }) {
   out = await runStage('extract', async () => {
     let x;
     try { x = await extractor(buf, sn.mime, { fresh, sha }); } catch (e) {
-      const keyIssue = /API_KEY|API key/i.test(e.message);
+      const errorKind = ['unreadable_file', 'ai_unavailable'].includes(e.kind) ? e.kind : 'internal';
+      const keyIssue = errorKind === 'ai_unavailable' && /API_KEY|API key/i.test(e.message);
+      const [headline, nextActions] = errorKind === 'unreadable_file'
+        ? ["Couldn't open this file — it may be corrupt or password-protected. Ask the vendor for a new copy.",
+          ['Ask the vendor for a new copy of the invoice (not password-protected).', 'Upload the new copy, or process this invoice by hand.']]
+        : keyIssue ? ["Couldn't read the document: the Gemini API key is missing or invalid — fix GEMINI_API_KEY and retry.", ['Set a valid GEMINI_API_KEY and retry.']]
+          : errorKind === 'ai_unavailable' ? ["Couldn't read the document: Gemini unavailable — retry in a minute.", ['Retry the run in a minute.', 'If it keeps failing, process this invoice by hand.']]
+            : [`Something went wrong while reading the invoice: ${e.message.replace(/\.$/, '')} — retry, or process this invoice by hand.`, ['Retry the run.', 'If it keeps failing, process this invoice by hand.']];
       return {
-        status: 'failed', fatal: true, summary: `Couldn't read the document: ${e.message}`, error: e.message,
+        status: 'failed', fatal: true, summary: `Couldn't read the document: ${e.message}`, error: e.message, errorKind, headline, nextActions,
         checks: [{ label: 'Gemini extraction', status: 'fail', detail: e.message }],
-        headline: keyIssue ? "Couldn't read the document: the Gemini API key is missing or invalid — fix GEMINI_API_KEY and retry."
-          : "Couldn't read the document: Gemini unavailable — retry in a minute.",
-        nextActions: keyIssue ? ['Set a valid GEMINI_API_KEY and retry.'] : ['Retry the run in a minute.', 'If it keeps failing, process this invoice by hand.'],
       };
     }
     ex = x.extraction;
@@ -173,7 +183,8 @@ async function execute({ id, buf, sn, sha, fresh, extractor, stages }) {
       f('subtotal', 'Subtotal', ex.subtotal), f('tax', 'Tax', tax), f('total', 'Total', ex.total, c.total),
       f('payment_terms', 'Payment terms', ex.payment_terms), f('bank_account', 'Bank account', ex.bank_details?.account_number ?? ex.bank_details?.iban),
     ];
-    const data = { model: x.model, cached: x.cached, latencyMs: x.latencyMs, attempts: x.attempts ?? [], ...(x.fallbackReason && { fallbackReason: x.fallbackReason }),
+    const data = { model: x.model, cached: x.cached, latencyMs: x.latencyMs, ...(x.cached && { originalLatencyMs: x.originalLatencyMs ?? null }),
+      attempts: x.attempts ?? [], ...(x.fallbackReason && { fallbackReason: x.fallbackReason }),
       fields, lineItems: [...ex.line_items], notices: [...ex.notices] };
     const checks = [
       { label: 'Model', status: 'info', detail: `${x.model}${x.cached ? ' (cached reading of this file)' : ''}` },
@@ -236,7 +247,7 @@ async function execute({ id, buf, sn, sha, fresh, extractor, stages }) {
 
     // 5. duplicate (before PO match, so a resend is not reported as an overrun against its own original)
     out = await runStage('duplicate', () => {
-      let ledger = db.getLedger();
+      let ledger = ledgerNow();
       let vendor = mv.vendor;
       if (!vendor && ex.vendor?.name) {
         // Unknown vendor: compare with earlier unknown-vendor invoices from a similar name.
@@ -247,7 +258,7 @@ async function execute({ id, buf, sn, sha, fresh, extractor, stages }) {
       reasons.push(...dup.reasons);
       const has = (code) => dup.reasons.some((r) => r.code === code);
       const o = dup.original;
-      const summary = has('DUPLICATE_INVOICE') ? `Duplicate of ${o.invoice_number} (run ${o.run_id})`
+      const summary = has('DUPLICATE_INVOICE') ? `Already processed as ${o.invoice_number} (run ${o.run_id})`
         : has('POSSIBLE_DUPLICATE') ? `Possible duplicate of ${o.invoice_number ? `invoice ${o.invoice_number}` : 'an unnumbered invoice'} (run ${o.run_id})`
           : has('DUPLICATE_FILE') ? 'Same file processed before'
             : !vendor ? 'Skipped: vendor unknown'
@@ -263,9 +274,19 @@ async function execute({ id, buf, sn, sha, fresh, extractor, stages }) {
     if (dup.reasons.some((r) => r.code === 'DUPLICATE_INVOICE')) {
       Object.assign(st('po_match'), { status: 'skipped', summary: 'Skipped — duplicate of an earlier invoice' });
       save(st('po_match'));
+    } else if (isCreditNote(ex)) {
+      // A credit note bills nothing, so no PO quantity or price checks; find the invoice it credits instead.
+      out = await runStage('po_match', () => {
+        cn = checkCreditNote(ex, mv.vendor, ledgerNow());
+        reasons.push(...cn.reasons);
+        return { reasons: cn.reasons, checks: cn.checks,
+          summary: `Credit note${cn.original ? ` against ${cn.original.invoice_number}` : ''} — no PO quantity checks`,
+          data: { po_number: ex.po_number ?? null, inferred: false, score: null, matchType: null, candidates: [], lines: [], creditNote: cn.data } };
+      });
+      if (out.fatal) return fail(out);
     } else {
       out = await runStage('po_match', () => {
-        mp = matchPO(ex, mv.vendor, { ...master, ledger: db.getLedger() });
+        mp = matchPO(ex, mv.vendor, { ...master, ledger: ledgerNow() });
         reasons.push(...mp.reasons);
         const po = mp.po;
         const matchType = po ? (po.category === 'services' ? '2-way' : '3-way') : null;
@@ -299,8 +320,10 @@ async function execute({ id, buf, sn, sha, fresh, extractor, stages }) {
   // 7. decision + ledger
   let result;
   out = await runStage('decision', () => {
-    result = decide({ ex, vendor: mv?.vendor ?? null, po: mp?.po ?? null, reasons, today: TODAY, inferred: mp?.inferred ?? false, original: dup?.original ?? null });
+    result = decide({ ex, vendor: mv?.vendor ?? null, po: mp?.po ?? null, reasons, today: TODAY, inferred: mp?.inferred ?? false,
+      original: dup?.original ?? cn?.original ?? null, sameFile: dup?.sameFile ?? false });
     const status = { APPROVE: 'approved', REVIEW: 'on_hold' }[result.decision];
+    if (retryOf && db.getRun(id)) db.updateLedgerStatus(retryOf, 'superseded'); // the retry's own row (if any) replaces the original's
     if (status && db.getRun(id)) {
       db.insertLedger({
         run_id: id, vendor_id: mv?.vendor?.vendor_id ?? null, invoice_number: ex.invoice_number, invoice_number_norm: normalizeInvoiceNumber(ex.invoice_number),
@@ -310,7 +333,7 @@ async function execute({ id, buf, sn, sha, fresh, extractor, stages }) {
     }
     return {
       status: { APPROVE: 'passed', REVIEW: 'warning', REJECT: 'failed' }[result.decision], summary: result.headline, data: result,
-      checks: result.reasons.map((r) => ({ label: r.code, status: r.severity === 'block' ? 'fail' : r.severity === 'hold' ? 'warn' : 'info', detail: r.message })),
+      checks: result.reasons.map((r) => ({ label: r.label, status: r.severity === 'block' ? 'fail' : r.severity === 'hold' ? 'warn' : 'info', detail: r.message })),
     };
   });
   if (out.fatal) return fail(out);
@@ -318,31 +341,62 @@ async function execute({ id, buf, sn, sha, fresh, extractor, stages }) {
   finish({
     status: 'done', decision: result.decision, headline: result.headline, vendor_id: mv?.vendor?.vendor_id ?? null,
     invoice_number: ex.invoice_number, total: ex.total, currency: ex.currency, po_number: mp?.po?.po_number ?? ex.po_number ?? null, result,
+    // REVIEW stays open (final null) until a person decides.
+    final: result.decision === 'REVIEW' ? null : { decision: result.decision, by: 'system', at: iso(), payment: result.payment },
   });
 }
 
 // ---------- human review ----------
 const httpError = (status, message) => Object.assign(new Error(message), { status });
+// Approving these needs a call-back to the vendor on the master-file phone number first.
+const CALLBACK_CODES = ['BANK_DETAILS_CHANGED', 'SUSPICIOUS_INSTRUCTIONS'];
 
-/** Approve or reject a held (REVIEW) invoice once. Moves its ledger row; returns the updated run. */
-export function reviewRun(id, { action, note } = {}) {
+/**
+ * Approve or reject a held (REVIEW) invoice once: {action, reviewer, note, callbackVerified}.
+ * Moves its ledger row, schedules payment on approval, records `review` and `final`; returns the updated run.
+ */
+export function reviewRun(id, { action, reviewer, note, callbackVerified } = {}) {
   const run = db.getRun(id);
   if (!run) throw httpError(404, 'Run not found');
-  if (action !== 'approve' && action !== 'reject') throw httpError(400, 'action must be "approve" or "reject"');
-  if (run.status !== 'done' || run.decision !== 'REVIEW') throw httpError(409, 'Only invoices on hold (REVIEW) can be reviewed');
-  if (run.review) throw httpError(409, `This invoice was already ${run.review.action === 'approve' ? 'approved' : 'rejected'} by a reviewer`);
+  if (action !== 'approve' && action !== 'reject') throw httpError(400, 'Choose approve or reject.');
+  if (run.status !== 'done' || run.decision !== 'REVIEW') throw httpError(409, 'Only invoices on hold (REVIEW) can be reviewed.');
+  if (run.review) throw httpError(409, `This invoice was already ${run.review.action === 'approve' ? 'approved' : 'rejected'} by ${run.review.reviewer ?? 'a reviewer'}.`);
+  const who = typeof reviewer === 'string' ? reviewer.trim() : '';
+  const why = typeof note === 'string' ? note.trim() : '';
+  if (who.length < 2) throw httpError(400, 'Add your name (at least 2 characters) so the decision can be traced.');
+  if (why.length < 3) throw httpError(400, 'Add a short note (at least 3 characters) saying why.');
+  const risky = (run.result?.reasons ?? []).find((r) => CALLBACK_CODES.includes(r.code));
+  if (action === 'approve' && risky && callbackVerified !== true) {
+    throw httpError(400, `Before approving, call the vendor on the phone number in our vendor master (never the one on the invoice) to confirm ${risky.code === 'BANK_DETAILS_CHANGED' ? 'the bank change' : 'the invoice is genuine'}, then tick "Call-back verified".`);
+  }
+
   const status = action === 'approve' ? 'approved' : 'rejected';
+  const ex = run.extraction ?? {};
   if (db.getLedger().some((r) => r.run_id === id)) db.updateLedgerStatus(id, status);
   else {
-    const ex = run.extraction ?? {};
     db.insertLedger({
       run_id: id, vendor_id: run.vendor_id, invoice_number: run.invoice_number, invoice_number_norm: normalizeInvoiceNumber(run.invoice_number),
       invoice_date: ex.invoice_date ?? null, net: invoiceTotals(ex).net, total: run.total, currency: run.currency, po_number: run.po_number,
       lines: [], status, created_at: iso(),
     });
   }
-  db.updateRun(id, { review: { action, note: String(note ?? '').slice(0, 2000), at: iso() } });
+  const at = iso();
+  const vendor = db.getMaster().vendors.find((v) => v.vendor_id === run.vendor_id) ?? null;
+  const payment = action === 'approve' ? schedulePayment(ex, vendor, today(), run.currency || ex.currency || vendor?.currency || 'USD') : null;
+  db.updateRun(id, {
+    review: { action, reviewer: who.slice(0, 200), note: why.slice(0, 2000), callbackVerified: callbackVerified === true, at },
+    final: { decision: action === 'approve' ? 'APPROVE' : 'REJECT', by: 'reviewer', at, payment },
+  });
   const updated = db.getRun(id);
   emit(id, 'run', summarize(updated));
   return updated;
+}
+
+/** Re-run a finished or failed run's file with a fresh extraction. Returns the new run id. */
+export function retryRun(id, { extractor } = {}) {
+  const run = db.getRun(id);
+  if (!run) throw httpError(404, 'Run not found');
+  if (run.status === 'running') throw httpError(409, 'This run is still in progress.');
+  const f = db.getRunFile(id);
+  return startRun({ bytes: f.bytes, mime: f.mime, filename: f.filename, source: run.source || 'upload', fresh: true, retryOf: id, ...(extractor && { extractor }) });
 }

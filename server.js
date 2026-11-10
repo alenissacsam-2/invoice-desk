@@ -5,7 +5,8 @@ import { PORT, PATHS, TOL, MAX_UPLOAD_BYTES } from './src/config.js';
 import { openDb, getRun, getRunFile, listRuns, getMaster, getLedger, resetRuns } from './src/db.js';
 import { sniff } from './src/extract.js';
 import { normalizePO } from './src/rules.js';
-import { startRun, subscribe, reviewRun, summarize } from './src/pipeline.js';
+import { startRun, subscribe, reviewRun, retryRun, summarize } from './src/pipeline.js';
+import { LABELS } from './src/decide.js';
 
 const TYPES = {
   '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8',
@@ -93,34 +94,71 @@ function sendRunFile(req, res, m) {
 async function review(req, res, m) {
   let body;
   try { body = JSON.parse((await readBody(req, 64 * 1024)).toString('utf8') || '{}'); } catch (e) {
-    throw e.status ? e : httpError(400, 'Body must be JSON: {"action":"approve"|"reject","note":"..."}');
+    throw e.status ? e : httpError(400, 'Body must be JSON: {"action":"approve"|"reject","reviewer":"...","note":"...","callbackVerified":true|false}');
   }
-  json(res, 200, reviewRun(m[1], body ?? {}));
+  if (!body || typeof body !== 'object' || Array.isArray(body)) throw httpError(400, 'Body must be a JSON object.');
+  json(res, 200, reviewRun(m[1], body));
 }
+
+function retry(req, res, m) {
+  req.resume();
+  json(res, 202, { id: retryRun(m[1]) });
+}
+
+/** Manifest plus, per sample, the latest run of that file still in the DB. */
+function samples(req, res) {
+  const runs = listRuns(); // newest first
+  json(res, 200, manifest().map((s) => {
+    const r = runs.find((x) => x.filename === s.file);
+    return { ...s, processed: r ? { runId: r.id, decision: r.decision ?? null, final_decision: getRun(r.id)?.final?.decision ?? null } : null };
+  }));
+}
+
+const median = (xs) => {
+  const s = xs.filter((x) => typeof x === 'number' && Number.isFinite(x)).sort((a, b) => a - b);
+  if (!s.length) return null;
+  return s.length % 2 ? s[(s.length - 1) / 2] : Math.round((s[s.length / 2 - 1] + s[s.length / 2]) / 2);
+};
 
 function stats(req, res) {
   const runs = allRuns();
   const done = runs.filter((r) => r.status === 'done');
-  const byDecision = { APPROVE: 0, REVIEW: 0, REJECT: 0 };
+  const byDecision = { APPROVE: 0, REVIEW: 0, REJECT: 0 }; // what the system decided
   for (const r of done) if (r.decision in byDecision) byDecision[r.decision]++;
+  const final = {
+    approved: done.filter((r) => r.final?.decision === 'APPROVE').length,
+    rejected: done.filter((r) => r.final?.decision === 'REJECT').length,
+    awaiting: done.filter((r) => r.decision === 'REVIEW' && !r.final).length,
+  };
   const valueApproved = { USD: 0, INR: 0 };
   for (const r of done) {
-    if (r.decision === 'APPROVE' || r.review?.action === 'approve') valueApproved[r.currency || 'USD'] = Math.round(((valueApproved[r.currency || 'USD'] ?? 0) + (r.total ?? 0)) * 100) / 100;
+    if (r.final?.decision !== 'APPROVE') continue;
+    const cur = r.currency || 'USD';
+    valueApproved[cur] = Math.round(((valueApproved[cur] ?? 0) + (r.total ?? 0)) * 100) / 100;
   }
-  const ms = done.map((r) => r.ms).filter((x) => x != null).sort((a, b) => a - b);
-  const medianMs = ms.length ? (ms.length % 2 ? ms[(ms.length - 1) / 2] : Math.round((ms[ms.length / 2 - 1] + ms[ms.length / 2]) / 2)) : null;
+  // Read time: the fresh Gemini latency, or for a cached run the latency of the reading it reused.
+  const readMs = done.map((r) => {
+    const d = r.stages?.find((s) => s.key === 'extract')?.data;
+    return d ? (d.cached ? d.originalLatencyMs : d.latencyMs) : null;
+  });
+  // Count invoices, not reasons: two QTY lines on one invoice count once.
   const counts = new Map();
-  for (const r of done) for (const x of r.result?.reasons ?? []) {
-    if (x.severity !== 'hold' && x.severity !== 'block') continue;
-    const c = counts.get(x.code) ?? { code: x.code, count: 0, severity: x.severity };
-    c.count++;
-    counts.set(x.code, c);
+  for (const r of done) {
+    const seen = new Set();
+    for (const x of r.result?.reasons ?? []) {
+      if ((x.severity !== 'hold' && x.severity !== 'block') || seen.has(x.code)) continue;
+      seen.add(x.code);
+      const c = counts.get(x.code) ?? { code: x.code, label: x.label ?? LABELS[x.code] ?? x.code, severity: x.severity, count: 0 };
+      c.count++;
+      counts.set(x.code, c);
+    }
   }
   json(res, 200, {
-    total: runs.length, byDecision, errors: runs.filter((r) => r.status === 'error').length,
-    awaitingReview: done.filter((r) => r.decision === 'REVIEW' && !r.review).length,
+    total: runs.length, byDecision, final, humanReviewed: done.filter((r) => r.review).length,
+    errors: runs.filter((r) => r.status === 'error').length, awaitingReview: final.awaiting,
     autoApprovalRate: done.length ? byDecision.APPROVE / done.length : 0,
-    valueApproved, medianMs, topReasons: [...counts.values()].sort((a, b) => b.count - a.count || a.code.localeCompare(b.code)),
+    valueApproved, medianMs: median(done.map((r) => r.ms)), medianReadMs: median(readMs),
+    topReasons: [...counts.values()].sort((a, b) => b.count - a.count || a.code.localeCompare(b.code)),
   });
 }
 
@@ -153,7 +191,7 @@ function data(req, res) {
 // Route table: [method, regex, handler(req, res, match, url)]. First match wins.
 const routes = [
   ['GET', /^\/healthz$/, (req, res) => send(res, 200, 'ok')],
-  ['GET', /^\/api\/samples$/, (req, res) => json(res, 200, manifest())],
+  ['GET', /^\/api\/samples$/, samples],
   ['POST', /^\/api\/runs$/, createRun],
   ['GET', /^\/api\/runs$/, (req, res, m, url) => {
     const d = url.searchParams.get('decision');
@@ -164,6 +202,7 @@ const routes = [
   ['GET', /^\/api\/runs\/([^/]+)\/events$/, events],
   ['GET', /^\/api\/runs\/([^/]+)\/file$/, sendRunFile],
   ['POST', /^\/api\/runs\/([^/]+)\/review$/, review],
+  ['POST', /^\/api\/runs\/([^/]+)\/retry$/, retry],
   ['GET', /^\/api\/stats$/, stats],
   ['GET', /^\/api\/data$/, data],
   ['POST', /^\/api\/reset$/, (req, res) => { resetRuns(); json(res, 200, { ok: true }); }],

@@ -30,8 +30,15 @@ export const digitsOnly = (s) => String(s ?? '').replace(/\D/g, '');
 export function money(n, cur = 'USD') {
   if (n === null || n === undefined || !Number.isFinite(n)) return 'an unknown amount';
   try {
-    return new Intl.NumberFormat(cur === 'INR' ? 'en-IN' : 'en-US', { style: 'currency', currency: cur || 'USD' }).format(n);
-  } catch { return `${n.toFixed(2)} ${cur}`; }
+    return new Intl.NumberFormat(cur === 'INR' ? 'en-IN' : 'en-US', { style: 'currency', currency: cur || 'USD' }).format(n).replace(/^-/, '−');
+  } catch { return `${n.toFixed(2)} ${cur}`.replace(/^-/, '−'); }
+}
+
+const MON = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+/** '2026-11-15' (or an ISO timestamp) → '15 Nov 2026'; anything else comes back unchanged. The one date format for messages. */
+export function fmtDate(s) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(s ?? ''));
+  return m && MON[+m[2] - 1] ? `${+m[3]} ${MON[+m[2] - 1]} ${m[1]}` : s;
 }
 
 /**
@@ -86,7 +93,7 @@ function parseDate(s) {
   return new Date(t).toISOString().slice(0, 10) === s ? t : null;
 }
 const DAY = 86400000;
-export const addDays = (s, d) => new Date(parseDate(s) + d * DAY).toISOString().slice(0, 10);
+export const addDays = (s, d) => { const t = parseDate(s); return t === null ? null : new Date(t + d * DAY).toISOString().slice(0, 10); };
 const daysBetween = (a, b) => Math.round((parseDate(b) - parseDate(a)) / DAY);
 
 /** Header numbers. Net (pre-tax, incl. shipping/surcharges) is always total − tax when a total exists. */
@@ -117,18 +124,33 @@ const DOC_TYPE_WORDS = { credit_note: 'a credit note', quote: 'a quote', stateme
 const EIN_RE = /^\d{2}-?\d{7}$/;
 const GSTIN_RE = /^\d{2}[A-Z]{5}\d{4}[A-Z][1-9A-Z]Z[0-9A-Z]$/;
 
+/** A credit note (or an "invoice" with a negative total) reduces what we owe; it is handled, not rejected. */
+export const isCreditNote = (ex) => ex?.document_type === 'credit_note'
+  || ((!ex?.document_type || ex.document_type === 'invoice') && num(ex?.total) !== null && num(ex.total) < 0);
+
+// Credit notes print amounts with either sign; compare magnitudes so a credit passes the same arithmetic as an invoice.
+const absNum = (x) => (num(x) === null ? x : Math.abs(num(x)));
+const absAmounts = (ex) => ({
+  ...ex, subtotal: absNum(ex.subtotal), tax_total: absNum(ex.tax_total), shipping: absNum(ex.shipping), total: absNum(ex.total),
+  line_items: (ex.line_items ?? []).map((l) => ({ ...l, quantity: absNum(l.quantity), unit_price: absNum(l.unit_price), amount: absNum(l.amount) })),
+  tax_lines: (ex.tax_lines ?? []).map((x) => ({ ...x, amount: absNum(x.amount) })),
+});
+
 export function validate(ex, { today } = {}) {
   const s = stage();
   const cur = ex?.currency || 'USD';
   const m = (n) => money(n, cur);
+  const credit = isCreditNote(ex);
 
-  if (!ex || ex.is_invoice === false || (ex.document_type && ex.document_type !== 'invoice')) {
+  if (!credit && (!ex || ex.is_invoice === false || (ex.document_type && ex.document_type !== 'invoice'))) {
     const what = DOC_TYPE_WORDS[ex?.document_type] ?? 'a document';
     s.check('Document is an invoice', 'fail', `Looks like ${what}`);
     s.reason('NOT_AN_INVOICE', 'block', `This is ${what}, not an invoice, so there is nothing to pay.`);
     return { checks: s.checks, reasons: s.reasons, data: { documentType: ex?.document_type ?? null } };
   }
-  s.check('Document is an invoice', 'pass', 'document_type = invoice');
+  if (credit) s.check('Document type', 'info', 'Credit note: reduces what we owe the vendor');
+  else s.check('Document is an invoice', 'pass', 'document_type = invoice');
+  const ax = credit ? absAmounts(ex) : ex; // arithmetic view
 
   // Required fields
   const required = [
@@ -143,9 +165,9 @@ export function validate(ex, { today } = {}) {
   }
 
   // Arithmetic
-  const t = invoiceTotals(ex);
+  const t = invoiceTotals(ax);
   const slack = slackFor(cur);
-  const lines = ex.line_items ?? [];
+  const lines = ax.line_items ?? [];
   let arithOk = true;
   const mismatch = (label, msg) => { arithOk = false; s.check(label, 'fail', msg); s.reason('ARITHMETIC_MISMATCH', 'hold', msg); };
   lines.forEach((l, i) => {
@@ -154,25 +176,25 @@ export function validate(ex, { today } = {}) {
     if (Math.abs(q * u - a) > slack + EPS)
       mismatch(`Line ${i + 1} arithmetic`, `Line ${i + 1} (${l.description}) says ${qtyStr(q)} × ${m(u)} = ${m(a)}, but that comes to ${m(q * u)}.`);
   });
-  const subtotal = num(ex.subtotal);
+  const subtotal = num(ax.subtotal);
   if (subtotal !== null && lines.length) {
     // Tax-inclusive invoices may print a gross or a net subtotal; accept either.
-    const ok = Math.abs(t.sumLines - subtotal) <= slack + EPS || (ex.tax_inclusive && Math.abs(t.sumLines - t.tax - subtotal) <= slack + EPS);
+    const ok = Math.abs(t.sumLines - subtotal) <= slack + EPS || (ax.tax_inclusive && Math.abs(t.sumLines - t.tax - subtotal) <= slack + EPS);
     if (ok) s.check('Lines add up to subtotal', 'pass', `${m(t.sumLines)}`);
     else mismatch('Lines add up to subtotal', `The lines add up to ${m(t.sumLines)}, but the subtotal says ${m(subtotal)}.`);
   }
-  const taxLines = ex.tax_lines ?? [];
-  if (taxLines.length && num(ex.tax_total) !== null) {
+  const taxLines = ax.tax_lines ?? [];
+  if (taxLines.length && num(ax.tax_total) !== null) {
     const st = sum(taxLines.map((x) => num(x.amount)));
-    if (Math.abs(st - num(ex.tax_total)) > slack + EPS)
-      mismatch('Tax lines add up to tax total', `The tax lines add up to ${m(st)}, but the tax total says ${m(num(ex.tax_total))}.`);
+    if (Math.abs(st - num(ax.tax_total)) > slack + EPS)
+      mismatch('Tax lines add up to tax total', `The tax lines add up to ${m(st)}, but the tax total says ${m(num(ax.tax_total))}.`);
   }
   if (t.total !== null) {
-    const expected = ex.tax_inclusive ? (subtotal !== null && Math.abs(subtotal - t.sumLines) > slack ? subtotal + t.tax : t.sumLines) + t.shipping
+    const expected = ax.tax_inclusive ? (subtotal !== null && Math.abs(subtotal - t.sumLines) > slack ? subtotal + t.tax : t.sumLines) + t.shipping
       : (subtotal ?? t.sumLines) + t.tax + t.shipping;
     if (lines.length || subtotal !== null) {
       if (Math.abs(expected - t.total) <= slack + EPS) s.check('Total adds up', 'pass', `${m(t.total)}`);
-      else mismatch('Total adds up', ex.tax_inclusive
+      else mismatch('Total adds up', ax.tax_inclusive
         ? `The prices include tax and add up to ${m(expected)}, but the invoice total says ${m(t.total)}.`
         : `Subtotal ${m(subtotal ?? t.sumLines)} + tax ${m(t.tax)}${t.shipping ? ` + shipping ${m(t.shipping)}` : ''} = ${m(expected)}, but the invoice total says ${m(t.total)}.`);
     }
@@ -184,7 +206,7 @@ export function validate(ex, { today } = {}) {
   for (const x of rated) {
     const rate = num(x.rate_pct), amt = num(x.amount);
     const label = x.label || `Tax ${rate}%`;
-    if (ex.tax_inclusive) {
+    if (ax.tax_inclusive) {
       const gross = t.total ?? t.sumLines;
       const exp = (gross * rate) / (100 + sumRates);
       if (Math.abs(exp - amt) <= slack + EPS) s.check(`${label} rate`, 'pass', `${rate}% included in ${m(gross)} = ${m(exp)}`);
@@ -197,7 +219,7 @@ export function validate(ex, { today } = {}) {
     }
   }
   if (arithOk && lines.length) s.check('Arithmetic', 'pass', `All amounts agree within ${m(slack)}`);
-  if (ex.tax_inclusive) {
+  if (ax.tax_inclusive) {
     s.check('Tax-inclusive prices', 'info', `Net ${m(t.net)} = total ${m(t.total)} − tax ${m(t.tax)}`);
     s.reason('TAX_INCLUSIVE', 'info', `Prices on this invoice include tax, so we compare ${m(t.net)} (the total less ${m(t.tax)} tax) with the PO.`);
   }
@@ -210,10 +232,10 @@ export function validate(ex, { today } = {}) {
       s.reason('DATE_OUT_OF_RANGE', 'hold', `The invoice date "${d}" is not a real calendar date.`);
     } else if (today && daysBetween(today, d) > 1) {
       s.check('Invoice date not in the future', 'fail', `${d} vs today ${today}`);
-      s.reason('DATE_OUT_OF_RANGE', 'hold', `The invoice is dated ${d}, which is in the future (today is ${today}).`);
+      s.reason('DATE_OUT_OF_RANGE', 'hold', `The invoice is dated ${fmtDate(d)}, which is in the future (today is ${fmtDate(today)}).`);
     } else if (today && daysBetween(d, today) > TOL.maxAgeDays) {
       s.check('Invoice date within a year', 'fail', `${daysBetween(d, today)} days old`);
-      s.reason('DATE_OUT_OF_RANGE', 'hold', `The invoice is dated ${d}, ${daysBetween(d, today)} days ago, which is past our ${TOL.maxAgeDays}-day limit.`);
+      s.reason('DATE_OUT_OF_RANGE', 'hold', `The invoice is dated ${fmtDate(d)}, ${daysBetween(d, today)} days ago, which is past our ${TOL.maxAgeDays}-day limit.`);
     } else s.check('Invoice date in range', 'pass', today ? `${d} (${daysBetween(d, today)} days ago)` : d);
     if (ex.due_date && parseDate(ex.due_date) !== null && parseDate(d) !== null && daysBetween(d, ex.due_date) < 0)
       s.check('Due date after invoice date', 'warn', `Due ${ex.due_date} is before the invoice date ${d}`);
@@ -246,7 +268,7 @@ export function validate(ex, { today } = {}) {
   }
 
   if (ex.notices?.length) s.check('Notices on the document', 'info', ex.notices.join(' | '));
-  return { checks: s.checks, reasons: s.reasons, data: { ...t, slack, missing } };
+  return { checks: s.checks, reasons: s.reasons, data: { ...invoiceTotals(ex), slack, missing, creditNote: credit } };
 }
 
 // ---------- 4. vendor ----------
@@ -262,8 +284,65 @@ function nameScore(name, v) {
   }
   return best;
 }
-const domainOf = (email) => String(email ?? '').toLowerCase().split('@')[1] || null;
-const domainCore = (d) => String(d ?? '').split('.').slice(0, -1).join('').replace(/[^a-z0-9]/g, '');
+const domainOf = (email) => String(email ?? '').toLowerCase().split('@')[1]?.replace(/[^a-z0-9.-]/g, '') || null;
+const SLD = new Set(['co', 'com', 'net', 'org', 'ac', 'gov', 'edu']);
+/** Registrable label without TLD or subdomains: mail.kestrel-supply.co.uk → kestrel-supply. */
+function coreLabel(d) {
+  const parts = String(d ?? '').split('.').filter(Boolean);
+  const tld = parts.pop();
+  if (parts.length > 1 && tld?.length === 2 && SLD.has(parts.at(-1))) parts.pop();
+  return parts.at(-1) ?? '';
+}
+function editDistance(a, b) {
+  let prev = Array.from({ length: b.length + 1 }, (_, j) => j);
+  for (let i = 1; i <= a.length; i++) {
+    const cur = [i];
+    for (let j = 1; j <= b.length; j++) cur[j] = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+    prev = cur;
+  }
+  return prev[b.length];
+}
+const DIGIT_LOOKS = { 0: 'o', 1: 'l', 3: 'e', 4: 'a', 5: 's', 7: 't', 8: 'b' };
+const skeleton = (l) => l.replace(/[-_]/g, '').replace(/\d/g, (d) => DIGIT_LOOKS[d] ?? d).replace(/i/g, 'l');
+/** SPEC: edit distance ≤ 2 on the core label, or the same letters with a hyphen added or a digit swapped in. */
+export function isLookalikeDomain(a, b) {
+  const x = coreLabel(a), y = coreLabel(b);
+  if (!x || !y || a === b || a.endsWith('.' + b) || b.endsWith('.' + a)) return false; // a subdomain of the real domain is the real domain
+  if (x === y || skeleton(x) === skeleton(y)) return true; // TLD swap, hyphen, 0↔o, 1↔l
+  return Math.min(x.length, y.length) >= 5 && editDistance(x, y) <= 2;
+}
+
+// Text on the document that tries to steer how it is processed (prompt injection, social engineering).
+// Each entry is one pattern; any hit in a notice, line description or payment terms → SUSPICIOUS_INSTRUCTIONS.
+// Urgency alone is normal dunning, so it only counts together with payment pressure (URGENCY + PAYMENT in one text).
+const STEERING = {
+  patterns: [
+    /\bpre-?approved\b/i,
+    /\b(?:auto-?approve|approve (?:this|it|immediately|now|without|today|at once|right away))/i,
+    /\b(?:do not|don't|dont|no need to|without|skip(?:ping)?|bypass(?:ing)?|avoid)\s+(?:any\s+|the\s+|further\s+)?(?:verif|check|call|confirm|review|approv|validat|contact)\w*/i,
+    /\bignore\s+(?:all\s+|any\s+|the\s+)?(?:previous|prior|above|earlier|other|usual|standard)?\s*(?:instructions?|rules?|checks?|controls?|policies|policy)/i,
+    // An AI addressed with an imperative ("AI reviewers must approve…"); case-sensitive AI so "ai" inside words and plain "AI module" lines don't count.
+    /\b(?:AI|LLM|GPT|[Ll]anguage [Mm]odel)s?\b[^.]{0,60}\b(?:[Aa]pprove|[Pp]ay|[Pp]rocess|[Ii]gnore|[Ss]kip|must|should|[Mm]ark|[Aa]ccept|[Rr]elease)/,
+    /\b(?:[Aa]pprove|[Ii]gnore|[Ss]kip|[Pp]ay)\b[^.]{0,60}\b(?:AI|LLM|GPT)s?\b/,
+    /\b(?:note|message|instructions?)\s+(?:to|for)\s+(?:the\s+)?(?:automated|AI|AP\s+(?:system|bot|software)|system|processor|reviewer|bot)/i,
+    /\bautomated\s+(?:\w+\s+)?(?:systems?|processors?|processing|reviews?|tools?|agents?)\b/i,
+  ],
+  urgency: /\b(?:urgent(?:ly)?|immediately|asap|right away|within (?:24|48) hours|same[- ]day|final warning)\b/i,
+  payment: /\b(?:pay|payment|wire|transfer|remit)\w*/i,
+};
+const steeringTexts = (ex) => [...(ex?.notices ?? []), ...(ex?.line_items ?? []).map((l) => l.description), ex?.payment_terms].filter((t) => typeof t === 'string' && t);
+export function findSteering(ex) {
+  return steeringTexts(ex).filter((t) => STEERING.patterns.some((re) => re.test(t)) || (STEERING.urgency.test(t) && STEERING.payment.test(t)));
+}
+function checkSteering(s, ex) {
+  const hits = findSteering(ex);
+  if (!hits.length) { s.check('Instructions aimed at processors', 'pass', 'None found'); return; }
+  s.check('Instructions aimed at processors', 'fail', hits.join(' | '));
+  // Quote the trigger phrases, not the whole text (the full text is in the check above).
+  const phrases = [...new Set(hits.flatMap((t) => [...STEERING.patterns, STEERING.urgency].map((re) => re.exec(t)?.[0]).filter(Boolean)))].slice(0, 2);
+  s.reason('SUSPICIOUS_INSTRUCTIONS', 'hold', `The document carries instructions aimed at whoever processes it (${phrases.map((p) => `"${p.trim()}"`).join(', ')}); we never follow those, and genuine vendors don't send them, so the vendor must confirm the invoice before anything is paid.`);
+}
+const EMAIL_RE = /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi;
 
 export function matchVendor(ex, vendors = []) {
   const s = stage();
@@ -295,6 +374,7 @@ export function matchVendor(ex, vendors = []) {
   if (!vendor) {
     s.check('Vendor in master', 'fail', name ? `No match for "${name}"` : 'No vendor name or tax ID');
     s.reason('VENDOR_UNKNOWN', 'hold', `${name ? `"${name}"` : 'The sender'} is not in our vendor master (no tax ID or name match), so it must be identified or set up before we can pay it.`);
+    checkSteering(s, ex);
     return { checks: s.checks, reasons: s.reasons, data: { name, taxId: ex?.vendor?.tax_id ?? null }, vendor: null, method: null, score };
   }
 
@@ -332,13 +412,20 @@ export function matchVendor(ex, vendors = []) {
   const bankNotice = (ex.notices ?? []).find((n) => /bank|account|remit|payment details/i.test(n) && /chang|new|updat|moved|switch/i.test(n));
   if (bankNotice) s.check('Bank change notice', 'fail', bankNotice);
 
+  // Contact/remit email domains on the invoice (vendor block and notices) vs the master's remit email.
   const invDom = domainOf(ex.vendor?.email), mDom = domainOf(vendor.remit_email);
-  let domainNote = '';
-  if (invDom && mDom && invDom !== mDom) {
-    const lookalike = domainCore(invDom) === domainCore(mDom) || tokenSim(domainCore(invDom), domainCore(mDom)) > 0;
-    s.check('Contact email domain', 'warn', `${invDom} differs from ${mDom} on file${lookalike ? ' (lookalike)' : ''}`);
-    domainNote = `, and the invoice's contact email domain (${invDom}) is ${lookalike ? 'a lookalike of' : 'not'} the one on file (${mDom})`;
-  } else if (invDom && mDom) s.check('Contact email domain', 'pass', invDom);
+  const invDoms = [...new Set([invDom, ...(ex.notices ?? []).flatMap((n) => n.match(EMAIL_RE) ?? []).map(domainOf)].filter(Boolean))];
+  let domainNote = '', lookalikeDom = null;
+  for (const d of mDom ? invDoms : []) {
+    if (d === mDom || d.endsWith('.' + mDom)) { s.check('Contact email domain', 'pass', d); continue; }
+    if (isLookalikeDomain(d, mDom)) {
+      lookalikeDom ??= d;
+      s.check('Contact email domain', 'fail', `${d} imitates ${mDom} on file (lookalike domain)`);
+    } else {
+      s.check('Contact email domain', 'warn', `${d} differs from ${mDom} on file`);
+      domainNote ||= `, and the invoice's contact email domain (${d}) is not the one on file (${mDom})`;
+    }
+  }
   if (ex.vendor?.phone && vendor.phone && digitsOnly(ex.vendor.phone) !== digitsOnly(vendor.phone))
     s.check('Phone matches master', 'warn', `Invoice ${ex.vendor.phone}, master ${vendor.phone}: call back on the master number only`);
 
@@ -352,6 +439,8 @@ export function matchVendor(ex, vendors = []) {
       : `The invoice says "${bankNotice}" without details we can compare to ${onFile} on file${domainNote}.`;
     s.reason('BANK_DETAILS_CHANGED', 'hold', msg);
   }
+  if (lookalikeDom) s.reason('REMIT_DOMAIN_LOOKALIKE', 'hold', `The invoice's contact email domain ${lookalikeDom} looks like ${vendor.name}'s real one (${mDom}) but is not the same; lookalike domains are a common way to redirect payments.`);
+  checkSteering(s, ex);
   return {
     checks: s.checks, reasons: s.reasons,
     data: { vendorId: vendor.vendor_id, bankDiffs: diffs, bankNotice: bankNotice ?? null, invoiceEmailDomain: invDom, masterEmailDomain: mDom },
@@ -477,7 +566,7 @@ export function matchPO(ex, vendor, ctx = {}) {
 
   const factor = ex.tax_inclusive && t.sumLines > 0 && net !== null ? net / t.sumLines : 1; // gross line → net line
   const lineMatches = [], ledgerLines = [], billedByLine = new Map(), unmatched = [];
-  let expected = 0, priceHolds = 0, priceWithin = null;
+  let expected = 0, priceHolds = 0, priceExtra = 0, priceWithin = null;
   for (const l of ex.line_items ?? []) {
     let q = num(l.quantity), u = num(l.unit_price), a = num(l.amount);
     if (q === null) q = u && a !== null ? Math.round((a / u) * 1e4) / 1e4 : 1; // shortcut: no qty → derive from amount/unit, else qty 1 at the amount
@@ -502,8 +591,10 @@ export function matchPO(ex, vendor, ctx = {}) {
       lm.variancePct = r2(v);
       if (v > TOL.unitPricePct + EPS) {
         priceHolds++;
+        const more = q * (netUnit - num(pl.unit_price));
+        priceExtra += more;
         s.check(`Price: ${pl.description}`, 'fail', `${pm(netUnit)} vs PO ${pm(num(pl.unit_price))} (+${pct1(v)})`);
-        s.reason('PRICE_VARIANCE', 'hold', `Billed ${pl.description} at ${pm(netUnit)} each, ${pct1(v)} above the PO price of ${pm(num(pl.unit_price))} (the limit is ${TOL.unitPricePct}%).`);
+        s.reason('PRICE_VARIANCE', 'hold', `Billed ${pl.description} at ${pm(netUnit)} each, ${pct1(v)} above the PO price of ${pm(num(pl.unit_price))} (the limit is ${TOL.unitPricePct}%)${q !== 1 ? `; on ${qtyStr(q)} that is ${pm(more)} more than the PO` : ''}.`);
       } else if (v > EPS) {
         priceWithin ??= `${pl.description} is billed at ${pm(netUnit)} against ${pm(num(pl.unit_price))} on the PO (+${pct1(v)}), within the ${TOL.unitPricePct}% limit.`;
         s.check(`Price: ${pl.description}`, 'pass', `${pm(netUnit)} vs PO ${pm(num(pl.unit_price))} (+${pct1(v)}, within tolerance)`);
@@ -540,15 +631,19 @@ export function matchPO(ex, vendor, ctx = {}) {
     const extraPct = expected > 0 ? (extra / expected) * 100 : Infinity;
     const unmatchedTxt = unmatched.length ? `, ${Math.abs(sum(unmatched.map((u) => u.amt)) - extra) < 0.01 ? 'all from' : 'including'} ${humanList(unmatched.map((l) => l.description))}, which ${unmatched.length > 1 ? 'are' : 'is'} not on the PO` : '';
     const aOk = expected > 0 ? ok(extra, expected) : extra <= EPS;
-    s.check('Invoice vs PO prices', aOk ? 'pass' : 'fail', `Net ${pm(net)} vs ${pm(expected)} expected (${extra >= 0 ? '+' : ''}${pm(extra)})`);
+    // A price variance that fully accounts for the extra is reported once, as PRICE_VARIANCE.
+    const byPrice = !aOk && priceHolds && !unmatched.length && Math.abs(extra - priceExtra) < 0.01;
+    // Within tolerance is not a failure: 'info', so the UI does not paint it red.
+    s.check('Invoice vs PO prices', aOk ? (extra > EPS ? 'info' : 'pass') : 'fail',
+      `Net ${pm(net)} vs ${pm(expected)} expected (${extra >= 0 ? '+' : ''}${pm(extra)})${aOk && extra > EPS ? ', within tolerance' : byPrice ? ', all from the price difference' : ''}`);
     if (!aOk) {
       overrun = true;
-      s.reason('PO_OVERRUN', 'hold', `This invoice comes to ${pm(net)} before tax, ${pm(extra)}${Number.isFinite(extraPct) ? ` (${pct1(extraPct)})` : ''} more than the PO prices for what it bills (${pm(expected)})${unmatchedTxt}; ${tolTxt}.`);
+      if (!byPrice) s.reason('PO_OVERRUN', 'hold', `This invoice comes to ${pm(net)} before tax, ${pm(extra)}${Number.isFinite(extraPct) ? ` (${pct1(extraPct)})` : ''} more than the PO prices for what it bills (${pm(expected)})${unmatchedTxt}; ${tolTxt}.`);
     } else if (extra > EPS) within = `Billed ${pm(net)} before tax against ${pm(expected)} at PO prices, ${pm(extra)} (${pct1(extraPct)}) more${unmatchedTxt}; that is within our ${TOL.headerPct}% / ${pm(cap)} tolerance.`;
 
     const total = num(po.net_total), cum = c.prevNet + net, over = cum - total;
     const bOk = total > 0 ? ok(over, total) : over <= EPS;
-    s.check('Cumulative vs PO total', bOk ? 'pass' : 'fail', `${pm(c.prevNet)} already invoiced + ${pm(net)} = ${pm(cum)} of ${pm(total)}`);
+    s.check('Cumulative vs PO total', bOk ? (over > EPS ? 'info' : 'pass') : 'fail',`${pm(c.prevNet)} already invoiced + ${pm(net)} = ${pm(cum)} of ${pm(total)}`);
     if (!bOk && !(overrun && Math.abs(over - extra) < 0.01)) { // same overrun already explained by (A)
       overrun = true;
       s.reason('PO_OVERRUN', 'hold', c.prevNet > 0
@@ -605,7 +700,11 @@ export function checkDuplicates(ex, vendor, ledger = [], { fileSha, priorFileSha
     if (exact) {
       numberHit = true; original = exact;
       s.check('Invoice number duplicate check', 'fail', `${ex.invoice_number} = ${exact.invoice_number} (run ${exact.run_id}, ${exact.status})`);
-      s.reason('DUPLICATE_INVOICE', 'block', `Invoice ${ex.invoice_number} is the same invoice as ${exact.invoice_number} for ${m(num(exact.total))}, ${statusWords[exact.status]} for ${vendor.name}.`);
+      const when = `already processed${exact.created_at ? ` on ${fmtDate(exact.created_at)}` : ''}${exact.run_id ? ` (run ${exact.run_id})` : ''}`;
+      const now = exact.status === 'approved' ? 'is approved for payment' : 'is on hold for review';
+      s.reason('DUPLICATE_INVOICE', 'block', ex.invoice_number === exact.invoice_number
+        ? `Invoice ${ex.invoice_number} for ${m(num(exact.total))} from ${vendor.name} was ${when} and ${now}.`
+        : `Invoice ${ex.invoice_number} is the same invoice as ${exact.invoice_number} for ${m(num(exact.total))} from ${vendor.name}, which was ${when} and ${now}.`);
     } else if (same.length) {
       numberHit = true; original = same[0];
       s.check('Invoice number duplicate check', 'fail', `${ex.invoice_number} reuses ${same[0].invoice_number} with a different total`);
@@ -622,9 +721,34 @@ export function checkDuplicates(ex, vendor, ledger = [], { fileSha, priorFileSha
         original = near;
         const gap = Math.abs(daysBetween(near.invoice_date, ex.invoice_date));
         s.check('Same amount, nearby date', 'fail', `${near.invoice_number ?? '(no number)'} on ${near.invoice_date}, ${gap} days apart`);
-        s.reason('POSSIBLE_DUPLICATE', 'hold', `${vendor.name} already billed the same ${m(total)} on ${near.invoice_number ? `invoice ${near.invoice_number}` : 'an unnumbered invoice'} dated ${near.invoice_date}, ${gap} days apart, under a different number; check it is not the same charge twice.`);
+        s.reason('POSSIBLE_DUPLICATE', 'hold', `${vendor.name} already billed the same ${m(total)} on ${near.invoice_number ? `invoice ${near.invoice_number}` : 'an unnumbered invoice'} dated ${fmtDate(near.invoice_date)}, ${gap} days apart, under a different number; check it is not the same charge twice.`);
       } else s.check('Same amount, nearby date', 'pass', `No other ${m(total)} invoice within ${TOL.dupWindowDays} days`);
     }
   }
-  return { checks: s.checks, reasons: s.reasons, data: { invoiceNumberNorm: norm, originalRunId: original?.run_id ?? null }, original };
+  // Same file and same invoice: one reason, DUPLICATE_INVOICE (the file match is just how it got here).
+  const sameFile = s.reasons.some((r) => r.code === 'DUPLICATE_FILE');
+  const reasons = s.reasons.some((r) => r.code === 'DUPLICATE_INVOICE') ? s.reasons.filter((r) => r.code !== 'DUPLICATE_FILE') : s.reasons;
+  return { checks: s.checks, reasons, data: { invoiceNumberNorm: norm, originalRunId: original?.run_id ?? null, sameFile }, original, sameFile };
+}
+
+// ---------- credit notes (in place of PO matching) ----------
+/** CREDIT_NOTE hold: nothing to pay. Names the original invoice when the document quotes one that is in the ledger. */
+export function checkCreditNote(ex, vendor, ledger = []) {
+  const s = stage();
+  const cur = ex.currency || vendor?.currency || 'USD';
+  const amt = money(-Math.abs(num(ex.total) ?? 0), cur);
+  const own = normalizeInvoiceNumber(ex.invoice_number);
+  // Any token on the document (other than its own number) that normalises to an invoice number we booked for this vendor.
+  const text = JSON.stringify({ ...ex, invoice_number: null });
+  const toks = new Set((text.match(/[A-Za-z0-9][A-Za-z0-9\-/_.]{2,}[A-Za-z0-9]/g) ?? []).map(normalizeInvoiceNumber));
+  const ref = vendor ? ledger.find((r) => r.vendor_id === vendor.vendor_id && ['approved', 'on_hold'].includes(r.status)
+    && (r.invoice_number_norm ?? normalizeInvoiceNumber(r.invoice_number))?.length >= 4
+    && (r.invoice_number_norm ?? normalizeInvoiceNumber(r.invoice_number)) !== own
+    && toks.has(r.invoice_number_norm ?? normalizeInvoiceNumber(r.invoice_number))) ?? null : null;
+  const who = vendor?.name ?? ex.vendor?.name ?? 'an unknown vendor';
+  s.check('Credit note', 'warn', `${amt}${ref ? ` against invoice ${ref.invoice_number}` : ''}`);
+  s.check('PO quantity checks', 'info', 'Skipped: a credit note does not bill goods or services');
+  if (ref) s.check('Referenced invoice', 'info', `${ref.invoice_number} (run ${ref.run_id}, ${ref.status === 'approved' ? 'approved' : 'on hold'})`);
+  s.reason('CREDIT_NOTE', 'hold', `Credit note${ex.invoice_number ? ` ${ex.invoice_number}` : ''} for ${amt} from ${who}${ref ? `, against invoice ${ref.invoice_number} (run ${ref.run_id})` : ''}. Nothing to pay; apply it against the vendor's next payment.`);
+  return { checks: s.checks, reasons: s.reasons, data: { referencedInvoice: ref?.invoice_number ?? null, referencedRunId: ref?.run_id ?? null }, original: ref };
 }

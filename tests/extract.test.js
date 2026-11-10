@@ -10,7 +10,7 @@ process.env.DB_PATH = path.join(tmp, 'app.db');
 process.env.GEMINI_API_KEY = 'test-key';
 process.env.GEMINI_MODEL = 'model-a';
 process.env.GEMINI_FALLBACK_MODEL = 'model-b';
-const { sniff, sha256, toNum, normalizeExtraction, extractInvoice, RETRY } = await import('../src/extract.js');
+const { sniff, sha256, toNum, normalizeExtraction, extractInvoice, RETRY, PROMPT } = await import('../src/extract.js');
 RETRY.baseMs = 0;
 
 const pdf = (body) => Buffer.from(`%PDF-1.4\n${body}\n%%EOF`, 'latin1');
@@ -101,6 +101,8 @@ test('extractInvoice: retries 503 then falls back to the second model, then cach
 
   const again = await extractInvoice(bytes, 'application/pdf');
   assert.equal(again.cached, true);
+  assert.equal(again.model, 'model-b');
+  assert.equal(again.originalLatencyMs, r.latencyMs, 'the cache keeps the original read time');
   assert.equal(calls.length, 3);
 
   // fresh + total failure -> cached copy with a reason
@@ -108,11 +110,29 @@ test('extractInvoice: retries 503 then falls back to the second model, then cach
   const stale = await extractInvoice(bytes, 'application/pdf', { fresh: true });
   assert.equal(stale.cached, true);
   assert.match(stale.fallbackReason, /unavailable \(503\)/);
+  assert.equal(stale.originalLatencyMs, r.latencyMs);
+
+  // fresh + 400: the file itself was refused, so no fallback to the cache either
+  t.mock.method(globalThis, 'fetch', async () => new Response('{"error":{"message":"The document has no pages."}}', { status: 400 }));
+  await assert.rejects(extractInvoice(bytes, 'application/pdf', { fresh: true }), (e) => e.kind === 'unreadable_file');
 });
 
-test('extractInvoice: 400 is not retried; total failure without cache throws a human message', async (t) => {
+test('extractInvoice: 400 means unreadable file, with no retry and no fallback model', async (t) => {
   let n = 0;
-  t.mock.method(globalThis, 'fetch', async () => { n++; return new Response('{"error":{"message":"bad"}}', { status: n === 1 ? 400 : 503 }); });
-  await assert.rejects(extractInvoice(pdf('/Font no-cache'), 'application/pdf'), /Gemini is unavailable \(503\) after retries/);
-  assert.equal(n, 3); // model-a once (400), model-b twice (503)
+  t.mock.method(globalThis, 'fetch', async () => { n++; return new Response('{"error":{"message":"Request contains an invalid argument."}}', { status: 400 }); });
+  await assert.rejects(extractInvoice(pdf('/Font corrupt'), 'application/pdf'), (e) => e.kind === 'unreadable_file' && e.status === 400 && /could not open the file \(400\)/.test(e.message));
+  assert.equal(n, 1);
+});
+
+test('extractInvoice: 503/429 on every attempt and model without cache is ai_unavailable', async (t) => {
+  let n = 0;
+  t.mock.method(globalThis, 'fetch', async () => { n++; return new Response('{"error":{"message":"overloaded"}}', { status: n % 2 ? 503 : 429 }); });
+  await assert.rejects(extractInvoice(pdf('/Font no-cache'), 'application/pdf'), (e) => e.kind === 'ai_unavailable' && /Gemini is unavailable \(429\) after retries on model-a and model-b/.test(e.message));
+  assert.equal(n, 4); // two attempts on each model
+});
+
+test('prompt: copy steering text into notices, never obey it', () => {
+  assert.match(PROMPT, /never instructions to you/);
+  assert.match(PROMPT, /copy that text verbatim into notices/);
+  assert.match(PROMPT, /credit_note/);
 });
