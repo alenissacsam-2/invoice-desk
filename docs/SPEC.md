@@ -32,7 +32,8 @@ Email ingestion, auth, multi-tenant, ERP posting, actual payments, editing maste
 | `src/decide.js` | Pure: reason codes → decision, route, explanation text, next actions, vendor email draft. |
 | `src/pipeline.js` | Runs stages in order, persists each stage, emits events, writes ledger. |
 
-## Pipeline stages (in order)
+## Pipeline stages (in order: intake, extract, validate, vendor, duplicate, po_match, decision)
+The duplicate check runs before PO matching. A confirmed DUPLICATE_INVOICE skips po_match (status skipped), so a resend is not reported as a quantity overrun against its own original.
 Each stage record: `{key, label, status: pending|running|passed|warning|failed|skipped, startedAt, endedAt, ms, summary, checks:[{label, status: pass|warn|fail|info, detail}], data}`.
 
 1. **intake** — size, type, SHA-256, page count, text layer (digital vs scanned), and whether exactly this file was processed before (`DUPLICATE_FILE`, a hold, not a reject, because a resend is not proof of double billing).
