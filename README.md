@@ -4,7 +4,7 @@ An invoice comes in as a PDF or image. Out comes a decision an AP manager can ac
 
 Built for the Zamp AI Solutions Analyst case study (PS-1, Finance / AP).
 
-**Live:** _add Render URL here_ · **Demo video:** _add link here_
+**Live:** https://invoice-desk-6mrv.onrender.com (free tier: the first visit after 15 idle minutes takes about a minute to wake) · **Demo video:** _add link here_
 
 ## How it works
 
