@@ -11,7 +11,7 @@ process.env.SEED_DB = ''; // start empty, not from the committed data/seed.db
 process.env.GEMINI_API_KEY = 'test-key';
 process.env.GEMINI_MODEL = 'model-a';
 process.env.GEMINI_FALLBACK_MODEL = 'model-b';
-const { sniff, sha256, toNum, normalizeExtraction, extractInvoice, RETRY, PROMPT, classify400, readQueue } = await import('../src/extract.js');
+const { sniff, sha256, toNum, normalizeExtraction, settleInvoiceDate, extractInvoice, RETRY, PROMPT, classify400, readQueue } = await import('../src/extract.js');
 const { LIMITS } = await import('../src/config.js');
 RETRY.baseMs = 0;
 
@@ -189,4 +189,13 @@ test('extractInvoice: at most LIMITS.concurrentReads Gemini reads at once, the r
   assert.equal(out.length, 7);
   assert.equal(peak, LIMITS.concurrentReads);
   assert.deepEqual(readQueue(), { active: 0, waiting: 0 });
+});
+
+test('settleInvoiceDate swaps a day-first misread only when the terms prove it', () => {
+  assert.equal(settleInvoiceDate('2026-06-11', '2026-11-21', 'Net 15'), '2026-11-06'); // photo 10: 11/06/2026, due 11/21
+  assert.equal(settleInvoiceDate('2026-11-06', '2026-11-21', 'Net 15'), '2026-11-06'); // already right
+  assert.equal(settleInvoiceDate('2026-06-11', '2026-11-21', 'Net 30'), '2026-06-11'); // swap doesn't fit either: leave it
+  assert.equal(settleInvoiceDate('2026-06-11', null, 'Net 15'), '2026-06-11');
+  assert.equal(settleInvoiceDate('2026-06-11', '2026-11-21', 'Due on receipt'), '2026-06-11');
+  assert.equal(settleInvoiceDate('2026-05-05', '2026-05-20', 'Net 15'), '2026-05-05');
 });

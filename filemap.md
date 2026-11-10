@@ -20,4 +20,5 @@
 - `scripts/make_samples.py` — generates samples/
 - `scripts/eval.js` — runs all samples, checks expected decisions
 - `tests/` — node:test suites (rules, logic-review property/invariant checks, pipeline, extract, server); `tests/fixtures/` ground-truth extractions
-- `docs/` — SPEC, PLAN, DEMO
+- `docs/` — SPEC, PLAN, DEMO (video script), DESIGN (visual system), RESEARCH, RUBRIC
+- `docs/img/` — README screenshots (retake from a fresh seed DB when the UI changes)

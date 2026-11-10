@@ -96,7 +96,7 @@ Rules:
 - invoice_date is the original invoice/issue date. Reprint, copy, print, statement, reminder and due dates are NOT the invoice date. If the document says it is a COPY / DUPLICATE / REPRINT / PAYMENT REMINDER, put that marking (and any reprint date) in notices, and still report the original invoice date as invoice_date.
 - invoice_number: copy it character for character as printed, including leading zeros, dashes and slashes.
 - po_number: only if explicitly labelled as a PO, purchase order, P.O., your ref / your reference or customer order number. Otherwise null.
-- Dates as YYYY-MM-DD. For ambiguous numeric dates use the document's locale (e.g. DD/MM/YYYY for India).
+- Dates as YYYY-MM-DD. For ambiguous numeric dates use the document's locale (MM/DD/YYYY for US vendors, DD/MM/YYYY for India), and settle it with the document's other dates: if any date on it reads only one way (e.g. 11/21/2026 can only be month-first), read every date on it that way.
 - Amounts are plain JSON numbers in the document currency, without symbols or thousands separators. Handle Indian digit grouping: "1,16,820.00" is 116820. Negative amounts (credits) as negative numbers.
 - line_items: one entry per billed line, including surcharges and fees printed as lines (e.g. fuel surcharge). item_code = the SKU / item code / part number / HSN or SAC code printed for that line, else null.
 - Taxes go in tax_lines, one entry per printed tax line (CGST and SGST are two separate lines; never merge them), not in line_items. tax_inclusive is true only if the document states line prices include tax.
@@ -127,6 +127,16 @@ export function toNum(v) {
 
 const strOrNull = (v) => (v == null || v === '' ? null : String(v));
 const dateOrNull = (v) => (typeof v === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(v.trim()) ? v.trim() : null);
+// A month-first date read day-first (11/06 → 11 Jun): swap only when the swapped date sits exactly "Net N" days before the printed due date.
+export function settleInvoiceDate(inv, due, terms) {
+  const n = Number(/net\s*(\d+)/i.exec(terms ?? '')?.[1]);
+  if (!inv || !due || !n) return inv;
+  const [y, a, b] = inv.split('-');
+  if (a === b || Number(b) > 12) return inv;
+  const fits = (d) => (Date.parse(due) - Date.parse(d)) / 864e5 === n;
+  const swapped = `${y}-${b}-${a}`;
+  return !fits(inv) && fits(swapped) ? swapped : inv;
+}
 const clamp01 = (v) => { const n = toNum(v); return n == null ? 0 : Math.min(1, Math.max(0, n)); };
 
 /** Light normalisation so downstream rules never see garbage. Throws if the output is not an extraction at all. */
@@ -143,7 +153,7 @@ export function normalizeExtraction(x) {
     vendor: { name: strOrNull(v.name), tax_id: strOrNull(v.tax_id), address: strOrNull(v.address), email: strOrNull(v.email), phone: strOrNull(v.phone) },
     bill_to_name: strOrNull(x.bill_to_name),
     invoice_number: strOrNull(x.invoice_number),
-    invoice_date: dateOrNull(x.invoice_date),
+    invoice_date: settleInvoiceDate(dateOrNull(x.invoice_date), dateOrNull(x.due_date), strOrNull(x.payment_terms)),
     due_date: dateOrNull(x.due_date),
     po_number: strOrNull(x.po_number),
     currency: strOrNull(x.currency)?.toUpperCase() ?? null,

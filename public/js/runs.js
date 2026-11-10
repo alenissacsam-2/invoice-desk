@@ -178,7 +178,7 @@ function overview(s, runs) {
       ${cell('awaiting', 'Awaiting a person', waiting.length, oldest != null && isFinite(oldest) ? `oldest ${age(Date.now() - oldest)}` : 'Nobody waiting', ['warn', 'review'])}
       ${cell('REVIEW', 'Money on hold', heldVal, heldRest || (waiting.length ? 'Not paid until signed off' : 'Nothing held'))}
       ${cell('APPROVE', 'Value approved', apprVal, apprRest || 'Scheduled for payment')}
-      ${cell('REJECT', 'Returned or rejected', rejected, decided ? `${pct(((by.REVIEW || 0) + (by.REJECT || 0)) / decided)} exception rate` : 'Nothing rejected', ['fail', 'reject'])}
+      ${cell('REJECT', 'Returned or rejected', rejected, decided ? `${pct((by.REJECT || 0) / decided)} of the batch` : 'Nothing rejected', ['fail', 'reject'])}
     </div>
     ${outcomes.length ? html`<div class="ostrip" role="group" aria-label="Live runs by outcome; each part filters the register">${outcomes.map(([d, n]) => html`<button type="button" class="oseg t-${DECISION[d].tone}" style="flex-grow:${n}" data-seg="${d}" data-fk="seg-${d}" aria-pressed="${seg === d ? 'true' : 'false'}"><span class="oseg-n">${n}</span> ${DECISION[d].word}</button>`)}</div>` : ''}
     ${heldAt.length ? html`<p class="held-at"><span class="held-k">Held at:</span> ${heldAt.map(([k, n], i) => html`${i ? ' · ' : ''}<span class="nowrap">${k} <b>${n}</b></span>`)}</p>` : ''}

@@ -6,6 +6,12 @@ Built for the Zamp AI Solutions Analyst case study (PS-1, Finance / AP).
 
 **Live:** https://invoice-desk-6mrv.onrender.com (free tier: the first visit after 15 idle minutes takes about a minute to wake) · **Demo video:** _add link here_
 
+![Invoice 07: matches its PO perfectly, but the bank details changed. Stamped ON HOLD and routed to Treasury & Security.](docs/img/slip-bank-change.png)
+
+**Try it in one minute:** open the live app, click **07 Kestrel** in the sample tray and watch the seven checks run. The invoice matches its PO to the cent, but the bank details changed and the email domain is a lookalike, so it is stamped ON HOLD for Treasury. Then open **Runs** for the batch view, or drop in any invoice PDF or photo of your own.
+
+**Eval:** 10/10 decisions and 10/10 key fields on fresh Gemini reads, repeated runs (`npm run eval -- --fresh --strict`). 136 automated tests.
+
 ## How it works
 
 ```
@@ -47,15 +53,20 @@ Run 01 before 06, and 04 before 05: the later ones need the earlier ones in the 
 
 ## The app
 - **Process:** drop a file into the in tray or pick a sample. A processing slip fills in row by row as each stage runs, and the decision lands as a rubber stamp: APPROVED, ON HOLD or VOID. The slip turns canary when it goes to a reviewer and pink when it goes back to the vendor. You see the checks, the extracted fields with confidence, the bank comparison, the line-by-line PO match and the original document beside it. Held invoices are signed off by a person, who must give a name and a note. A bank-change or suspicious-instruction hold also needs a call-back confirmation before it can be approved, and approval re-checks the PO against the current ledger.
-- **Runs:** history of every run with KPIs (auto-approval rate, value approved, processing time, why invoices were held) and filters.
-- **Procurement data:** vendors, POs with invoiced and remaining balances, goods receipts, the ledger, and the matching policy.
+- **Runs:** a batch control sheet with the numbers an AP manager asks for: straight-through rate, who is waiting on a person and for how long, money on hold, value approved. Then where held invoices sit (Treasury, Receiving, AP clerk), the exception kinds, and a register of every slip. Every number and chip filters the register.
+- **Procurement data:** vendors with terms and status, POs with invoiced and remaining balances (including the split laptop order), goods receipts by GRN, the ledger linked back to each PO, and the matching policy.
+- Light and dark themes; tables turn into cards on a phone.
+
+| Batch control | Dark theme: photo with a hidden instruction (10) |
+|---|---|
+| ![Runs page: batch control sheet, outcome strip, exception kinds and register](docs/img/runs.png) | ![Invoice 10 in dark mode: a phone photo with a footer telling automated AP systems to skip verification, held for Treasury](docs/img/slip-photo-injection-dark.png) |
 
 ## Run it locally
 Requires Node 24+. There are no npm dependencies.
 ```bash
 echo GEMINI_API_KEY=your_key > .env
 npm start            # http://localhost:3000
-npm test             # 129 tests: rules, logic review, pipeline, extraction, server
+npm test             # 136 tests: rules, logic review, pipeline, extraction, server
 npm run eval         # runs all 10 samples against the live server and checks each decision
 ```
 
@@ -71,13 +82,14 @@ The free tier sleeps after 15 minutes idle (about a minute to wake up) and its d
 - Retry only applies to failed runs and open holds, and the original is marked superseded, so nothing gets approved twice.
 - Every POST needs an `X-Demo` header, which protects against CSRF. Uploads that cost a Gemini read are rate-limited per IP, and there is a daily cap on AI reads (`GEMINI_DAILY_CAP`), so cached samples keep working once it is reached. Uploads are capped at 8 MB, extraction runs at most 4 reads at once, and the server enforces timeouts.
 - Security headers on every response: CSP (`script-src self`), nosniff, no-referrer. All invoice text is escaped before rendering.
-- 129 automated tests cover the rules, the review findings (property and invariant checks over 480 generated cases), the pipeline including concurrency, extraction, and the server.
+- 136 automated tests cover the rules, the review findings (property and invariant checks over 480 generated cases), the pipeline including concurrency, extraction, and the server.
 
 ## Assumptions and limits
 - One buyer (Halden Robotics, with a US and an India entity). Master data is read-only CSV.
 - Invoices are single-currency. There is no FX.
 - PO tolerance is checked on net amounts; tax is checked arithmetically (rate × base) rather than against the PO.
 - Nothing is sent or paid. Emails are drafts and "payment" is a scheduled date.
+- Ambiguous numeric dates (11/06) follow the vendor's locale, and a day-first misread is corrected only when the swapped date fits the printed "Net N" terms and due date exactly.
 - Scanned vs digital is detected by a heuristic (does the PDF embed fonts?). Gemini also reports it.
 - The free Gemini tier can return 503 under load. The app retries, falls back to a second model, and caches extractions by file hash.
 
