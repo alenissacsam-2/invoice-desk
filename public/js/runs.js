@@ -69,7 +69,7 @@ function overview(s, runs) {
   return html`<section class="overview ${reasons.length ? '' : 'solo'}" aria-label="Summary">
     <div class="kpis">
       ${tile('Invoices processed', s.total ?? runs.length, running ? `${running} running now` : `${decided} decided`)}
-      ${tile('Auto-approved', by.APPROVE ?? 0, `${pct(s.autoApprovalRate)} straight through`, 'APPROVE')}
+      ${tile('Auto-approved', by.APPROVE ?? 0, decided ? `${pct(s.autoApprovalRate)} straight through` : 'Nothing decided yet', 'APPROVE')}
       ${tile('On hold', by.REVIEW ?? 0, `${s.awaitingReview ?? 0} awaiting a person`, 'REVIEW')}
       ${tile('Rejected', by.REJECT ?? 0, 'Blocked before payment', 'REJECT')}
       ${tile('Value approved', first ? money(first[1], first[0]) : money(0, 'USD'), rest.length ? html`<span class="mono">+ ${rest.map(([c, v]) => money(v, c)).join(' · ')}</span>` : 'Scheduled for payment')}

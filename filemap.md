@@ -7,7 +7,12 @@
 - `src/rules.js` — pure checks: validate, vendor, PO match, duplicates
 - `src/decide.js` — pure: reasons → decision, explanation, email draft
 - `src/pipeline.js` — runs the 7 stages, persists, emits events
-- `public/` — frontend (index.html, app.js, styles.css)
+- `public/index.html`, `public/styles.css` — shell and all styles (tokens per docs/DESIGN.md)
+- `public/app.js` — hash router, nav count, reset
+- `public/js/util.js` — html templating, api(), formatting, icons, copy buttons
+- `public/js/process.js` — inbox rail, live run view (SSE), decision card, document column
+- `public/js/runs.js` — runs dashboard: KPIs, reasons, filters, table, demo-set runner
+- `public/js/data.js` — procurement data tables + matching policy card
 - `data/*.csv` — vendor master, POs, PO lines, goods receipts
 - `data/seed.db` — snapshot of demo runs loaded on first boot
 - `samples/` — demo invoice PDFs + manifest.json

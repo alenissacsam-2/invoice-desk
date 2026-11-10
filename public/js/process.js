@@ -89,10 +89,11 @@ function renderSamples() {
   if (samplesError) { list.innerHTML = html`<li class="pad error-text">Couldn't load the sample inbox: ${samplesError}</li>`; return; }
   if (!samples.length) { list.innerHTML = html`<li class="pad muted">No samples found in samples/manifest.json.</li>`; return; }
   const curFile = cur?.run?.source === 'sample' ? cur.run.filename : null;
+  const focused = list.contains(document.activeElement) ? document.activeElement.dataset.file : null;
   list.innerHTML = html`${samples.map((s) => {
     const d = DECISION[s.expected];
     const tags = Array.isArray(s.tags) ? s.tags : [];
-    return html`<li><button type="button" class="sample" data-file="${s.file}" ${s.file === curFile ? raw('aria-current="true"') : ''} ${starting ? raw('disabled') : ''} title="${s.title || s.file}">
+    return html`<li><button type="button" class="sample" data-file="${s.file}" ${s.file === curFile ? raw('aria-current="true"') : ''} ${starting ? raw('aria-disabled="true"') : ''} title="${s.title || s.file}">
       <span class="sample-top">
         <span class="sample-no mono">${sampleNo(s.file)}</span>
         <span class="sample-vendor">${s.vendor || s.title || s.file}</span>
@@ -105,6 +106,7 @@ function renderSamples() {
       </span>
     </button></li>`;
   })}`;
+  if (focused) list.querySelector(`[data-file="${CSS.escape(focused)}"]`)?.focus({ preventScroll: true });
 }
 
 const freshQ = () => ($('#fresh')?.checked ? 'fresh=1' : '');
@@ -174,6 +176,7 @@ function openRun(id) {
   root.classList.add('has-run');
   root.classList.remove('show-doc');
   $('#run-col').scrollTop = 0;
+  if (!matchMedia('(min-width: 800px)').matches) window.scrollTo(0, 0); // phones: the run sits above the inbox
   $('#run-col').innerHTML = html`<div class="run-loading muted"><span class="spin"></span> Opening run <span class="mono">${id}</span>…</div>`;
   $('#doc-col').innerHTML = '';
 

@@ -216,7 +216,7 @@ main:focus-visible, .data-section:focus-visible { outline: none; }
 }
 .samples li:has(+ li > .sample[aria-current]) , .samples li:has(> .sample[aria-current]) + li { border-top-color: transparent; }
 .sample:hover { background: var(--surface-2); }
-.sample:disabled { cursor: progress; }
+.sample[aria-disabled="true"] { cursor: progress; }
 .sample[aria-current="true"] { background: var(--accent-bg); }
 .sample[aria-current="true"]::before { content: ''; position: absolute; left: 0; top: 8px; bottom: 8px; width: 3px; border-radius: 2px; background: var(--accent); }
 .sample-top { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
