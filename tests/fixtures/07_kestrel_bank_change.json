@@ -1,0 +1,67 @@
+{
+  "is_invoice": true,
+  "document_type": "invoice",
+  "vendor": {
+    "name": "Kestrel Industrial Supply",
+    "tax_id": "68-0391547",
+    "address": "9150 Commerce Blvd, Fremont, CA 94538",
+    "email": "accounts@kestrel-supply.co",
+    "phone": "(510) 555-0199"
+  },
+  "bill_to_name": "Halden Robotics, Inc.",
+  "invoice_number": "KIS-24-0871",
+  "invoice_date": "2026-11-02",
+  "due_date": "2026-12-02",
+  "po_number": "PO-2026-0405",
+  "currency": "USD",
+  "payment_terms": "Net 30",
+  "line_items": [
+    {
+      "description": "CNC spindle motor 2.2kW",
+      "item_code": "SPN-22KW",
+      "quantity": 4,
+      "unit_price": 3150,
+      "amount": 12600
+    },
+    {
+      "description": "Linear guide rail 1m",
+      "item_code": "LGR-1000",
+      "quantity": 20,
+      "unit_price": 96.5,
+      "amount": 1930
+    }
+  ],
+  "subtotal": 14530,
+  "tax_lines": [
+    {
+      "label": "Sales Tax 8.5%",
+      "rate_pct": 8.5,
+      "amount": 1235.05
+    }
+  ],
+  "tax_total": 1235.05,
+  "tax_inclusive": false,
+  "shipping": 0,
+  "total": 15765.05,
+  "bank_details": {
+    "bank_name": "First Coastal Bank",
+    "account_number": "9988776655",
+    "routing_code": "063100277",
+    "iban": null,
+    "swift": null
+  },
+  "notices": [
+    "IMPORTANT: our bank details have changed. Please remit to First Coastal Bank, routing 063100277, account 9988776655"
+  ],
+  "source_quality": {
+    "kind": "digital_text",
+    "legibility": "high"
+  },
+  "confidence": {
+    "vendor_name": 0.97,
+    "invoice_number": 0.97,
+    "invoice_date": 0.97,
+    "po_number": 0.97,
+    "total": 0.97
+  }
+}

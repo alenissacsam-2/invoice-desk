@@ -1,0 +1,70 @@
+{
+  "is_invoice": true,
+  "document_type": "invoice",
+  "vendor": {
+    "name": "Sharma Electricals Pvt Ltd",
+    "tax_id": "29AABCS1234F1Z5",
+    "address": "Plot No. 27, 2nd Phase, Peenya Industrial Area, Bengaluru, Karnataka 560058",
+    "email": "accounts@sharmaelectricals.in",
+    "phone": "+91 80 4123 5678"
+  },
+  "bill_to_name": "Halden Robotics India Pvt Ltd",
+  "invoice_number": "SE/2026-27/0457",
+  "invoice_date": "2026-11-04",
+  "due_date": "2026-12-04",
+  "po_number": "PO-2026-IN-0031",
+  "currency": "INR",
+  "payment_terms": "30 Days",
+  "line_items": [
+    {
+      "description": "LED panel light 2x2 40W",
+      "item_code": "LED-PNL-40W",
+      "quantity": 60,
+      "unit_price": 1450,
+      "amount": 87000
+    },
+    {
+      "description": "Installation labour",
+      "item_code": "SVC-INSTALL",
+      "quantity": 1,
+      "unit_price": 12000,
+      "amount": 12000
+    }
+  ],
+  "subtotal": 99000,
+  "tax_lines": [
+    {
+      "label": "Output CGST @ 9%",
+      "rate_pct": 9,
+      "amount": 8910
+    },
+    {
+      "label": "Output SGST @ 9%",
+      "rate_pct": 9,
+      "amount": 8910
+    }
+  ],
+  "tax_total": 17820,
+  "tax_inclusive": false,
+  "shipping": null,
+  "total": 116820,
+  "bank_details": {
+    "bank_name": "HDFC Bank Ltd",
+    "account_number": "50200012345678",
+    "routing_code": "HDFC0001234",
+    "iban": null,
+    "swift": null
+  },
+  "notices": [],
+  "source_quality": {
+    "kind": "digital_text",
+    "legibility": "high"
+  },
+  "confidence": {
+    "vendor_name": 0.97,
+    "invoice_number": 0.97,
+    "invoice_date": 0.97,
+    "po_number": 0.97,
+    "total": 0.97
+  }
+}

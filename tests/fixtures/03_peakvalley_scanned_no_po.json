@@ -1,0 +1,58 @@
+{
+  "is_invoice": true,
+  "document_type": "invoice",
+  "vendor": {
+    "name": "Peak Valley Janitorial",
+    "tax_id": "47-5520913",
+    "address": "412 Alder Street, Milpitas, CA 95035",
+    "email": "peakvalleyclean@gmail.com",
+    "phone": "(408) 555-0167"
+  },
+  "bill_to_name": "Halden Robotics, Inc.",
+  "invoice_number": "PV-1093",
+  "invoice_date": "2026-10-31",
+  "due_date": null,
+  "po_number": null,
+  "currency": "USD",
+  "payment_terms": "Payment due within 15 days",
+  "line_items": [
+    {
+      "description": "Office cleaning services for the month of October 2026",
+      "item_code": null,
+      "quantity": null,
+      "unit_price": null,
+      "amount": 2400
+    }
+  ],
+  "subtotal": 2400,
+  "tax_lines": [
+    {
+      "label": "Sales tax",
+      "rate_pct": null,
+      "amount": 0
+    }
+  ],
+  "tax_total": 0,
+  "tax_inclusive": false,
+  "shipping": null,
+  "total": 2400,
+  "bank_details": {
+    "bank_name": "Chase Bank",
+    "account_number": "5582019934",
+    "routing_code": "322271627",
+    "iban": null,
+    "swift": null
+  },
+  "notices": [],
+  "source_quality": {
+    "kind": "scanned_image",
+    "legibility": "medium"
+  },
+  "confidence": {
+    "vendor_name": 0.9,
+    "invoice_number": 0.86,
+    "invoice_date": 0.85,
+    "po_number": 0.9,
+    "total": 0.9
+  }
+}

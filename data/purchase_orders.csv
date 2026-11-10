@@ -1,0 +1,11 @@
+po_number,vendor_id,buyer_entity,issue_date,currency,net_total,category,requester,status,description
+PO-2026-0301,V001,"Halden Robotics, Inc.",2026-07-14,USD,1276.00,goods,Priya Nair,closed,Q3 office supplies restock
+PO-2026-0377,V003,"Halden Robotics, Inc.",2026-09-25,USD,2400.00,services,Priya Nair,open,Monthly office cleaning - San Jose HQ
+PO-2026-0378,V003,"Halden Robotics, Inc.",2026-09-25,USD,1850.00,services,Priya Nair,open,Q4 window and carpet deep clean
+PO-2026-0398,V002,"Halden Robotics, Inc.",2026-10-10,USD,1250.00,services,Daniel Ortiz,open,LTL freight San Jose to Austin lab
+PO-2026-0405,V005,"Halden Robotics, Inc.",2026-10-12,USD,14530.00,goods,Marcus Chen,open,CNC spindle motors and linear rails
+PO-2026-0412,V001,"Halden Robotics, Inc.",2026-10-02,USD,3789.00,goods,Priya Nair,open,Q4 office supplies and chairs
+PO-2026-0415,V007,"Halden Robotics, Inc.",2026-10-08,USD,2140.00,goods,Daniel Ortiz,open,Trade-show print collateral
+PO-2026-0420,V004,"Halden Robotics, Inc.",2026-10-05,USD,16450.00,goods,Marcus Chen,open,Engineering laptops and docks (10 seats)
+PO-2026-0431,V004,"Halden Robotics, Inc.",2026-10-28,USD,3112.00,goods,Marcus Chen,open,27-inch 4K monitors for engineering
+PO-2026-IN-0031,V006,Halden Robotics India Pvt Ltd,2026-10-15,INR,99000.00,goods,Ananya Rao,open,Bengaluru office LED retrofit

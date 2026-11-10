@@ -1,0 +1,67 @@
+{
+  "is_invoice": true,
+  "document_type": "invoice",
+  "vendor": {
+    "name": "Northstar Computers, Inc.",
+    "tax_id": "77-0482216",
+    "address": "3500 Lakeside Drive, Suite 200, Santa Clara, CA 95054",
+    "email": "receivables@northstarcomputers.com",
+    "phone": "(408) 555-0123"
+  },
+  "bill_to_name": "Halden Robotics, Inc.",
+  "invoice_number": "NSC-7802",
+  "invoice_date": "2026-11-05",
+  "due_date": "2026-12-05",
+  "po_number": "PO-2026-0420",
+  "currency": "USD",
+  "payment_terms": "Net 30 days",
+  "line_items": [
+    {
+      "description": "Laptop 14\" Pro 32GB/1TB",
+      "item_code": "NB-14PRO-32",
+      "quantity": 4,
+      "unit_price": 1480,
+      "amount": 5920
+    },
+    {
+      "description": "USB-C docking station G2",
+      "item_code": "DOCK-USBC-G2",
+      "quantity": 4,
+      "unit_price": 165,
+      "amount": 660
+    }
+  ],
+  "subtotal": 6580,
+  "tax_lines": [
+    {
+      "label": "Sales Tax 8.50% (Santa Clara Co.)",
+      "rate_pct": 8.5,
+      "amount": 559.3
+    }
+  ],
+  "tax_total": 559.3,
+  "tax_inclusive": false,
+  "shipping": 0,
+  "total": 7139.3,
+  "bank_details": {
+    "bank_name": "Silicon Valley Bank, a division of First Citizens Bank",
+    "account_number": "3300982214",
+    "routing_code": "121140399",
+    "iban": null,
+    "swift": null
+  },
+  "notices": [
+    "Balance shipment against PO-2026-0420 (remaining 4 laptops, 4 docks). This completes the order."
+  ],
+  "source_quality": {
+    "kind": "digital_text",
+    "legibility": "high"
+  },
+  "confidence": {
+    "vendor_name": 0.97,
+    "invoice_number": 0.97,
+    "invoice_date": 0.97,
+    "po_number": 0.97,
+    "total": 0.97
+  }
+}

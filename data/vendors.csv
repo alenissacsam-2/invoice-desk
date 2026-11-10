@@ -1,0 +1,9 @@
+vendor_id,name,aliases,tax_id,country,currency,bank_name,bank_account,bank_routing,remit_email,phone,status,payment_terms_days
+V001,Acme Office Supplies LLC,Acme Office Supplies;Acme Office Supply,84-2917365,US,USD,"Wells Fargo Bank, N.A.",4411223344,121000248,ar@acmeofficesupply.com,(510) 555-0142,active,30
+V002,Brightline Logistics Inc,Brightline Logistics;Brightline Freight,94-3318402,US,USD,"Bank of America, N.A.",3301458820,121000358,billing@brightlinelogistics.com,(209) 555-0188,active,15
+V003,Peak Valley Janitorial,Peak Valley Janitorial Services;Peak Valley Cleaning,47-5520913,US,USD,Chase Bank,5582019934,322271627,peakvalleyclean@gmail.com,(408) 555-0167,active,15
+V004,Northstar Computers Inc,"Northstar Computers;Northstar Computers, Inc.",77-0482216,US,USD,Silicon Valley Bank,3300982214,121140399,receivables@northstarcomputers.com,(408) 555-0123,active,30
+V005,Kestrel Industrial Supply,Kestrel Industrial;Kestrel Supply,68-0391547,US,USD,Pacific Western Bank,7700112233,122238420,ap@kestrelsupply.com,(510) 555-0199,active,30
+V006,Sharma Electricals Pvt Ltd,Sharma Electricals;Sharma Electricals Private Limited,29AABCS1234F1Z5,IN,INR,HDFC Bank Ltd,50200012345678,HDFC0001234,accounts@sharmaelectricals.in,+91 80 4123 5678,active,30
+V007,Lumen Print & Signage,Lumen Print and Signage;Lumen Print,46-2783105,US,USD,U.S. Bank,1507734419,121122676,hello@lumenprint.co,(408) 555-0150,active,15
+V008,Globex Trading Co,Globex Trading;Globex Trading Company,61-7733095,US,USD,Bank of America,0098123344,026009593,ar@globextrading.com,(305) 555-0101,blocked,30

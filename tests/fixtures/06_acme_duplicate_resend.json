@@ -1,0 +1,74 @@
+{
+  "is_invoice": true,
+  "document_type": "invoice",
+  "vendor": {
+    "name": "ACME OFFICE SUPPLIES LLC",
+    "tax_id": "84-2917365",
+    "address": "1840 INDUSTRIAL PARKWAY, HAYWARD CA 94545",
+    "email": "AR@ACMEOFFICESUPPLY.COM",
+    "phone": "(510) 555-0142"
+  },
+  "bill_to_name": "HALDEN ROBOTICS, INC.",
+  "invoice_number": "ACM-INV-010458",
+  "invoice_date": "2026-10-28",
+  "due_date": "2026-11-27",
+  "po_number": "PO-2026-0412",
+  "currency": "USD",
+  "payment_terms": "NET 30",
+  "line_items": [
+    {
+      "description": "A4 COPY PAPER 80GSM, CASE OF 10 REAMS",
+      "item_code": "PAP-A4-80",
+      "quantity": 40,
+      "unit_price": 42.5,
+      "amount": 1700
+    },
+    {
+      "description": "ERGONOMIC OFFICE CHAIR EC-200",
+      "item_code": "CHR-EC200",
+      "quantity": 6,
+      "unit_price": 289,
+      "amount": 1734
+    },
+    {
+      "description": "WHITEBOARD MARKERS ASSORTED 12-PK",
+      "item_code": "MRK-12AST",
+      "quantity": 25,
+      "unit_price": 14.2,
+      "amount": 355
+    }
+  ],
+  "subtotal": 3789,
+  "tax_lines": [
+    {
+      "label": "SALES TAX 8.50%",
+      "rate_pct": 8.5,
+      "amount": 322.07
+    }
+  ],
+  "tax_total": 322.07,
+  "tax_inclusive": false,
+  "shipping": null,
+  "total": 4111.07,
+  "bank_details": {
+    "bank_name": "WELLS FARGO BANK NA",
+    "account_number": "4411223344",
+    "routing_code": "121000248",
+    "iban": null,
+    "swift": null
+  },
+  "notices": [
+    "COPY — PAYMENT REMINDER"
+  ],
+  "source_quality": {
+    "kind": "digital_text",
+    "legibility": "high"
+  },
+  "confidence": {
+    "vendor_name": 0.97,
+    "invoice_number": 0.97,
+    "invoice_date": 0.97,
+    "po_number": 0.97,
+    "total": 0.97
+  }
+}

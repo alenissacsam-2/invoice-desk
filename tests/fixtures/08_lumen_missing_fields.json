@@ -1,0 +1,65 @@
+{
+  "is_invoice": true,
+  "document_type": "invoice",
+  "vendor": {
+    "name": "Lumen Print & Signage",
+    "tax_id": "46-2783105",
+    "address": "255 S 1st Street, San Jose, CA 95113",
+    "email": "hello@lumenprint.co",
+    "phone": "(408) 555-0150"
+  },
+  "bill_to_name": "Halden Robotics, Inc.",
+  "invoice_number": null,
+  "invoice_date": null,
+  "due_date": null,
+  "po_number": "PO-2026-0415",
+  "currency": "USD",
+  "payment_terms": "Payment due within 15 days",
+  "line_items": [
+    {
+      "description": "Trade-show brochures A5, 500 pcs",
+      "item_code": "BRO-A5-500",
+      "quantity": 1,
+      "unit_price": 1240,
+      "amount": 1240
+    },
+    {
+      "description": "Roll-up banner 85×200cm",
+      "item_code": "BNR-RU-85",
+      "quantity": 3,
+      "unit_price": 300,
+      "amount": 900
+    }
+  ],
+  "subtotal": 2140,
+  "tax_lines": [
+    {
+      "label": "Sales tax (8.5%)",
+      "rate_pct": 8.5,
+      "amount": 181.9
+    }
+  ],
+  "tax_total": 181.9,
+  "tax_inclusive": false,
+  "shipping": null,
+  "total": 2321.9,
+  "bank_details": {
+    "bank_name": "U.S. Bank",
+    "account_number": "1507734419",
+    "routing_code": "121122676",
+    "iban": null,
+    "swift": null
+  },
+  "notices": [],
+  "source_quality": {
+    "kind": "digital_text",
+    "legibility": "high"
+  },
+  "confidence": {
+    "vendor_name": 0.97,
+    "invoice_number": 0.97,
+    "invoice_date": 0.97,
+    "po_number": 0.97,
+    "total": 0.97
+  }
+}
