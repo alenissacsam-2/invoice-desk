@@ -1,8 +1,10 @@
 // Process screen: inbox rail, live run view (SSE), document column.
 import {
-  api, html, raw, esc, money, num, qty, dur, clock, day, signedPct, icon, statusIcon, runsChanged, copyButton,
+  api, html, raw, esc, money, num, qty, dur, clock, day, when, ago, prose, signedPct, icon, statusIcon, runsChanged, copyButton,
+  humanize, reasonLabel, isCode, finalOf, decisionChip,
   DECISION, STAGE_TONE, CHECK_ICON, CHECK_TONE, SEVERITY,
 } from './util.js';
+import { policyCard } from './data.js';
 
 const STAGES = [
   ['intake', 'Intake', 'Checks the file type, size and fingerprint, and whether this exact file was seen before.'],
@@ -26,6 +28,19 @@ let cur = null;       // the open run: { id, run, es, queue, busy, manual, appli
 let starting = false; // a sample/upload POST is in flight
 
 const $ = (sel) => root?.querySelector(sel);
+
+// "Hide document" lets the run column go wide on desktop; remembered per browser (storage can throw).
+const DOC_KEY = 'invoice-desk:doc-hidden';
+let docHidden = false;
+try { docHidden = localStorage.getItem(DOC_KEY) === '1'; } catch { /* private mode */ }
+function setDocHidden(v) {
+  docHidden = v;
+  try { localStorage.setItem(DOC_KEY, v ? '1' : '0'); } catch { /* ignore */ }
+  root?.classList.toggle('doc-hidden', v);
+  const b = $('[data-doc-toggle]');
+  if (b) b.innerHTML = String(html`${icon('doc', 13)}${v ? 'Show document' : 'Hide document'}`);
+}
+const isError = (r) => r.status === 'error' || !!r.result?.errorKind || r.result?.error === true;
 
 export function mountProcess(main, id) {
   if (!root || !main.contains(root)) build(main);
@@ -58,6 +73,9 @@ function build(main) {
     <section class="doc-col" id="doc-col" aria-label="Document"></section>
   </div>`;
   root = main.querySelector('.process');
+  root.classList.toggle('doc-hidden', docHidden);
+  root.addEventListener('input', onReviewInput);
+  root.addEventListener('change', onReviewInput);
 
   const drop = $('#drop'), input = $('#file-input');
   drop.addEventListener('dragover', (e) => { e.preventDefault(); drop.classList.add('over'); });
@@ -93,7 +111,12 @@ function renderSamples() {
   list.innerHTML = html`${samples.map((s) => {
     const d = DECISION[s.expected];
     const tags = Array.isArray(s.tags) ? s.tags : [];
-    return html`<li><button type="button" class="sample" data-file="${s.file}" ${s.file === curFile ? raw('aria-current="true"') : ''} ${starting ? raw('aria-disabled="true"') : ''} title="${s.title || s.file}">
+    const p = s.processed && typeof s.processed === 'object' ? s.processed : null;
+    const shown = p ? p.final_decision || p.decision : null;
+    // Approved or held invoices sit in the ledger, so the same invoice again is a duplicate.
+    const dupHint = p && ['APPROVE', 'REVIEW'].includes(shown) ? 'Running again will be caught as a duplicate' : '';
+    const isCur = s.file === curFile;
+    return html`<li><button type="button" class="sample" data-file="${s.file}" ${isCur ? raw('aria-current="true"') : ''} ${starting ? raw('aria-disabled="true"') : ''} title="${[s.title || s.file, dupHint].filter(Boolean).join(' · ')}">
       <span class="sample-top">
         <span class="sample-no mono">${sampleNo(s.file)}</span>
         <span class="sample-vendor">${s.vendor || s.title || s.file}</span>
@@ -102,8 +125,10 @@ function renderSamples() {
       <span class="sample-foot">
         ${tags.map((t) => html`<span class="chip sm ${/happy/i.test(t) ? 't-accent' : /edge/i.test(t) ? 't-review' : ''}">${t}</span>`)}
         ${s.runAfter ? html`<span class="hint">run after ${sampleNo(s.runAfter) || s.runAfter}</span>` : ''}
-        ${s.expected ? html`<span class="expects mono">expects <span class="tone-text t-${d?.tone || 'neutral'}">${s.expected}</span></span>` : ''}
+        ${p ? html`<span class="expects processed">processed · ${shown ? decisionChip(shown) : 'done'}</span>`
+          : s.expected ? html`<span class="expects mono">expects <span class="tone-text t-${d?.tone || 'neutral'}">${s.expected}</span></span>` : ''}
       </span>
+      ${dupHint && isCur ? html`<span class="sample-hint">${dupHint}</span>` : ''}
     </button></li>`;
   })}`;
   if (focused) list.querySelector(`[data-file="${CSS.escape(focused)}"]`)?.focus({ preventScroll: true });
@@ -146,7 +171,7 @@ async function upload(f) {
 // ---------------------------------------------------------------- empty state
 function renderEmpty() {
   $('#doc-col').innerHTML = '';
-  $('#run-col').innerHTML = html`<div class="empty-run">
+  $('#run-col').innerHTML = html`<div class="landing"><div class="empty-run">
     <h1 class="page-title">How a run works</h1>
     <p class="lede">Every invoice goes through the same seven stages. The model only reads the document. Each decision is made by plain rules you can audit.</p>
     <ol class="steps">${STAGES.map(([, label, desc], i) => html`<li>
@@ -158,7 +183,42 @@ function renderEmpty() {
         <div class="outcome t-${DECISION[k].tone}"><span class="tone-text">${icon(DECISION[k].icon, 14)}</span><span><span class="outcome-word mono tone-text">${k}</span><span class="outcome-text">${t}</span></span></div>`)}
     </div>
     <p class="prompt">${icon('arrowLeft', 14)} Pick a sample or drop a file to start.</p>
-  </div>`;
+  </div>
+  <aside class="landing-side" aria-label="Recent activity and policy">
+    <section class="card recent" aria-labelledby="recent-title">
+      <div class="card-head"><h2 class="section-title" id="recent-title">Recent runs</h2><a class="link small" href="#/runs">All runs ${icon('arrowRight', 12)}</a></div>
+      <ul class="recent-list" id="recent"><li class="muted small recent-empty"><span class="spin sm"></span> Loading…</li></ul>
+    </section>
+    <div id="landing-policy"></div>
+  </aside></div>`;
+  loadLanding();
+}
+
+let policy = null; // matching policy from /api/data, for the landing card and display tolerances
+
+async function loadPolicy() {
+  if (!policy) { try { policy = (await api('/api/data'))?.policy || null; } catch { policy = null; } }
+  return policy;
+}
+
+async function loadLanding() {
+  const [runs, p] = await Promise.all([api('/api/runs').catch(() => null), loadPolicy()]);
+  const list = $('#recent');
+  if (!list || cur) return; // a run opened meanwhile
+  const rows = (Array.isArray(runs) ? runs : runs?.runs || []).slice(0, 5);
+  list.innerHTML = runs == null ? html`<li class="muted small recent-empty">Couldn't load recent runs.</li>`
+    : !rows.length ? html`<li class="muted small recent-empty">No runs yet. Pick a sample to see the first one here.</li>`
+    : html`${rows.map((r) => {
+      const f = finalOf(r);
+      const human = f && f.by === 'reviewer';
+      return html`<li><a class="recent-row" href="#/run/${encodeURIComponent(r.id)}">
+        <span class="recent-main"><span class="recent-vendor">${r.vendor_name || r.filename || 'Unknown vendor'}</span>
+          <span class="recent-sub mono">${[r.invoice_number, r.total != null ? money(r.total, r.currency) : null].filter(Boolean).join(' · ') || r.filename}</span></span>
+        <span class="recent-side">${decisionChip(human ? f.decision : r.decision, r.status)}<span class="recent-ago mono">${human ? 'by reviewer · ' : ''}${ago(r.created_at)}</span></span>
+      </a></li>`;
+    })}`;
+  const slot = $('#landing-policy');
+  if (slot) slot.innerHTML = policyCard(p);
 }
 
 // ---------------------------------------------------------------- run lifecycle
@@ -172,6 +232,7 @@ function closeRun() {
 
 function openRun(id) {
   closeRun();
+  loadPolicy();
   const c = cur = { id, run: null, es: null, queue: [], busy: false, manual: new Map(), applied: new Map(), tick: null, docTab: 'doc', decisionSig: null, done: false };
   root.classList.add('has-run');
   root.classList.remove('show-doc');
@@ -250,7 +311,7 @@ function applyDone(run) {
   renderProgress();
   renderDecisionSlot();
   renderJson();
-  renderSamples();
+  loadSamples(); // refreshes the "processed" state in the inbox
   runsChanged();
 }
 
@@ -290,14 +351,15 @@ function renderHead() {
       <h1 class="run-file mono" title="${r.filename}">${r.filename || 'Untitled document'}</h1>
       <span class="run-clock ${running ? 'live' : ''}">${running
         ? html`<span class="spin sm" aria-hidden="true"></span><span>Running</span><span class="mono" id="elapsed"></span>`
-        : r.status === 'error' ? html`<span class="tone-text t-reject">Stopped</span>`
-        : html`<span>Finished in</span><span class="mono">${dur(r.ms)}</span>`}</span>
+        : isError(r) ? html`<span>Stopped</span>`
+        : html`<span>Finished in</span><span class="mono">${dur(r.ms)}</span>${cached ? html`<span class="muted">(cached read)</span>` : ''}`}</span>
     </div>
     <div class="run-meta">
       <span>Run <span class="mono">${r.id}</span></span><span aria-hidden="true">·</span>
       <span>started <span class="mono">${clock(r.created_at)}</span></span>
       ${source ? html`<span class="chip sm">${source}</span>` : ''}
       ${cached ? html`<span class="chip sm t-accent">Cached extraction</span>` : ''}
+      <button type="button" class="link small doc-toggle" data-doc-toggle>${icon('doc', 13)}${docHidden ? 'Show document' : 'Hide document'}</button>
     </div>
   </header>`;
   if (running) {
@@ -334,7 +396,7 @@ function renderStage(key, animate) {
   const hadFocus = li.contains(document.activeElement);
   const tone = STAGE_TONE[s.status] || 'neutral';
   const expandable = s.status !== 'pending';
-  const summary = s.summary || (s.status === 'running' ? (key === 'extract' ? 'Gemini is reading the document…' : 'Running checks…') : DESC[key] || '');
+  const summary = s.summary ? prose(key === 'intake' ? dedupeParts(s.summary) : s.summary) : (s.status === 'running' ? (key === 'extract' ? 'Gemini is reading the document…' : 'Running checks…') : DESC[key] || '');
   const showMs = s.ms != null && !['pending', 'running', 'skipped'].includes(s.status);
   li.className = `stage s-${s.status}${open ? ' open' : ''}`;
   li.innerHTML = html`<button type="button" class="stage-head" ${expandable ? '' : raw('disabled')} aria-expanded="${open ? 'true' : 'false'}" ${open ? raw(`aria-controls="sb-${esc(key)}"`) : ''}>
@@ -365,12 +427,25 @@ function stageBody(s) {
   return parts;
 }
 
+/** 'JPEG image, image, 112 KB' → 'JPEG image, 112 KB': drop a part another part already says. */
+function dedupeParts(t) {
+  const parts = String(t).split(', ');
+  return parts.filter((p, i) => !parts.some((q, j) => j !== i && q.length > p.length && new RegExp(`\\b${p.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i').test(q))).join(', ');
+}
+
+const reasonFor = (code) => (cur?.run?.result?.reasons || cur?.run?.stages.find((s) => s.key === 'decision')?.data?.reasons || []).find((x) => x.code === code);
+
 function checksList(checks) {
-  // Reason codes as labels (decision stage) get a code chip with the detail beneath, instead of a narrow label column.
-  return html`<ul class="checks">${checks.map((k) => { const isCode = /^[A-Z][A-Z0-9_]+$/.test(k.label || ''); return html`<li class="check${isCode ? ' is-code' : ''}">
+  // Ordinary checks are one ledger line (label | detail, the detail truncates with the full text in a tooltip).
+  // Reason codes (decision stage) show the plain-English label with the full message beneath.
+  return html`<ul class="checks">${checks.map((k) => {
+    const code = isCode(k.label) ? k.label : null;
+    const label = code ? k.reason_label || reasonLabel(reasonFor(code) || { code }) : k.label;
+    const detail = prose(k.detail ?? '');
+    return html`<li class="check c-${k.status || 'info'}${code ? ' is-code' : ''}">
     <span class="check-icon tone-text t-${CHECK_TONE[k.status] || 'neutral'}">${icon(CHECK_ICON[k.status] || 'info', 14, k.status)}</span>
-    <span class="check-label">${isCode ? html`<span class="code">${k.label}</span>` : k.label}</span>
-    <span class="check-detail">${k.detail ?? ''}</span>
+    <span class="check-label" title="${code ? code : label}">${label}</span>
+    <span class="check-detail" title="${code ? '' : detail}">${detail}</span>
   </li>`; })}</ul>`;
 }
 
@@ -384,18 +459,17 @@ function conf(c) {
 
 function fieldValue(f) {
   if (f.value == null || f.value === '') return html`<span class="missing">Not on document</span>`;
-  const v = typeof f.value === 'object' ? JSON.stringify(f.value) : String(f.value);
+  const v = typeof f.value === 'object' ? JSON.stringify(f.value) : /date/i.test(f.key || '') ? day(String(f.value)) : String(f.value);
   return /name/i.test(f.key || '') ? v : html`<span class="mono">${v}</span>`;
 }
 
 function extractBody(d) {
   const out = [];
   const cur$ = runCurrency();
-  const meta = [
-    d.model && html`<span>Model <span class="mono">${d.model}</span></span>`,
-    d.latencyMs != null && !d.cached && html`<span>Latency <span class="mono">${dur(d.latencyMs)}</span></span>`,
-    d.cached && html`<span class="chip sm t-accent">Cached extraction</span>`,
-  ].filter(Boolean);
+  const meta = d.cached
+    ? [html`<span>Read from cache${d.originalLatencyMs != null ? html` · original read <span class="mono">${dur(d.originalLatencyMs)}</span>` : ''}${d.model ? html` (<span class="mono">${d.model}</span>)` : ''}</span>`]
+    : [d.model && html`<span>Model <span class="mono">${d.model}</span></span>`,
+      d.latencyMs != null && html`<span>Read in <span class="mono">${dur(d.latencyMs)}</span></span>`].filter(Boolean);
   if (meta.length) out.push(html`<div class="meta-line">${meta}</div>`);
   if (Array.isArray(d.fields) && d.fields.length) {
     out.push(html`<h3 class="sub-title">Fields</h3><div class="tbl-wrap"><table class="tbl">
@@ -448,7 +522,7 @@ function vendorBody(d) {
     const rout = (x) => x?.routing ?? x?.routing_code ?? x?.bank_routing;
     if (b.differs) {
       out.push(html`<div class="callout t-reject"><div class="callout-title">${icon('failed', 14)} Bank details differ from the vendor master</div>
-        <p>Payment is blocked. Verify by calling the number on file${v.phone ? html` (<span class="mono">${v.phone}</span>)` : ''}, never a contact printed on the invoice.</p></div>`);
+        <p>Payment is blocked. Verify by calling the number on file${v.phone ? html`, <span class="mono nowrap">${v.phone}</span>` : ''}, never a contact printed on the invoice.</p></div>`);
     }
     out.push(html`<h3 class="sub-title">Bank details</h3><div class="tbl-wrap"><table class="tbl bank ${b.differs ? 'differs' : ''}">
       <thead><tr><th><span class="sr-only">Source</span></th><th>Bank</th><th>Routing</th><th>Account</th></tr></thead>
@@ -491,7 +565,10 @@ function lineRow(l, d, cur$) {
   const overPo = l.ordered != null && l.billedQty > l.ordered - prev;
   const bad = l.status === 'fail' ? 'fail' : l.status === 'warn' ? 'warn' : '';
   const qtyTone = overReceipt || overPo ? 'fail' : '';
-  const priceTone = bad && !qtyTone && l.variancePct ? bad : '';
+  // Red only for a variance known to exceed the limit; anything within tolerance stays review-toned.
+  const tol = policy?.unitPricePct;
+  const overTol = tol != null && l.variancePct != null && Math.abs(l.variancePct) > tol;
+  const priceTone = bad && !qtyTone && l.variancePct ? (bad === 'fail' && (overTol || tol == null) ? 'fail' : 'warn') : '';
   const notOnPo = l.ordered == null && l.poUnitPrice == null;
   const rowTone = bad && !qtyTone && !priceTone ? bad : '';
   // Each line is two rows (item, then numbers) so eight columns fit the narrow run column.
@@ -513,59 +590,132 @@ function dupBody(d) {
 }
 
 // ---------------------------------------------------------------- decision card
+const CALLBACK_CODES = ['BANK_DETAILS_CHANGED', 'SUSPICIOUS_INSTRUCTIONS'];
+const ERROR_TITLE = { unreadable_file: "Couldn't open this file", ai_unavailable: 'The AI reader is unavailable right now', internal: 'Something went wrong on our side' };
+const NAME_KEY = 'invoice-desk:reviewer';
+
 function renderDecisionSlot(animate = true) {
   const c = cur, r = c.run, slot = $('#decision-slot');
   if (!slot) return;
   const ds = r.stages.find((s) => s.key === 'decision');
   const res = r.result?.decision ? r.result : ds?.data?.decision ? ds.data : null;
-  const kind = r.status === 'error' ? 'error' : res ? 'card' : 'pending';
-  const sig = JSON.stringify([kind, kind === 'card' ? [res, r.review] : kind === 'error' ? r.error : 0]);
+  const kind = isError(r) && r.status !== 'running' ? 'error' : res ? 'card' : 'pending';
+  const sig = JSON.stringify([kind, kind === 'card' ? [res, r.review, r.final] : kind === 'error' ? [r.error, r.result] : 0]);
   if (sig === c.decisionSig) return;
   c.decisionSig = sig;
-  if (kind === 'error') {
-    const failed = r.stages.find((s) => s.status === 'failed');
-    slot.innerHTML = html`<div class="decision t-reject ${animate ? 'enter' : ''}"><div class="decision-top">
-      <div class="decision-word">Stopped</div>
-      <p class="headline">This run couldn't finish.</p>
-      <p class="explanation">${r.error || failed?.summary || 'Something went wrong while processing this file.'} Try running it again, or tick “Re-extract” to skip the cache.</p></div></div>`;
-  } else if (kind === 'pending') {
-    slot.innerHTML = html`<div class="decision-pending"><span class="pending-dot" aria-hidden="true"></span><span><strong>Decision pending.</strong> It appears here once every check has run.</span></div>`;
-  } else {
-    slot.innerHTML = decisionCard(r, res, animate);
+  if (kind === 'error') slot.innerHTML = errorCard(r, animate);
+  else if (kind === 'pending') slot.innerHTML = html`<div class="decision-pending"><span class="pending-dot" aria-hidden="true"></span><span><strong>Decision pending.</strong> It appears here once every check has run.</span></div>`;
+  else { slot.innerHTML = decisionCard(r, res, animate); validateReview(); }
+}
+
+function errorCard(r, animate) {
+  const res = r.result || {};
+  const failed = r.stages.find((s) => s.status === 'failed');
+  const title = ERROR_TITLE[res.errorKind] || "This run couldn't finish";
+  // The server headline may repeat the title ("Couldn't open this file — it may be…"); keep only what it adds.
+  let text = prose(res.headline || r.error || failed?.summary || 'Something went wrong while processing this file.');
+  if (text.toLowerCase().startsWith(title.toLowerCase())) text = text.slice(title.length).replace(/^[\s—–:.-]+/, '');
+  if (text) text = text[0].toUpperCase() + text.slice(1);
+  const actions = Array.isArray(res.nextActions) ? res.nextActions : [];
+  return html`<article class="decision error-card t-neutral ${animate ? 'enter' : ''}" aria-label="Run stopped: ${title}">
+    <div class="decision-top">
+      <div class="decision-id"><span class="tone-text">${icon('info', 22)}</span><span><span class="error-title">${title}</span><span class="decision-sub">Nothing was decided and nothing will be paid.</span></span></div>
+      ${text ? html`<p class="explanation">${text}</p>` : ''}
+    </div>
+    <div class="decision-body">
+      ${actions.length ? html`<h3 class="mini-title">What to do</h3><ul class="error-actions">${actions.map((a) => html`<li>${prose(a)}</li>`)}</ul>` : ''}
+      <div class="retry-row">
+        <button type="button" class="btn primary" data-retry>${icon('arrowRight', 14)}Retry this file</button>
+        <span class="muted small">Starts a new run on the same file and reads it fresh.</span>
+      </div>
+      <p class="form-error" id="retry-error" role="alert"></p>
+    </div>
+  </article>`;
+}
+
+async function retryRun(btn) {
+  const c = cur, r = c.run;
+  const err = $('#retry-error');
+  btn.disabled = true;
+  btn.classList.add('busy');
+  try {
+    let id;
+    try { ({ id } = await api(`/api/runs/${encodeURIComponent(c.id)}/retry`, { method: 'POST' })); } catch (e) {
+      // v1 servers have no retry endpoint: a sample can still be re-run fresh.
+      if (e.status !== 404 || r.source !== 'sample' || !r.filename) throw e;
+      ({ id } = await api(`/api/runs?sample=${encodeURIComponent(r.filename)}&fresh=1`, { method: 'POST' }));
+    }
+    runsChanged();
+    location.hash = `#/run/${encodeURIComponent(id)}`;
+  } catch (e) {
+    if (c !== cur) return;
+    if (err) err.textContent = e.status === 404 ? "This server can't retry uploads yet. Drop the file again to start a new run." : `Couldn't retry: ${e.message}`;
+    btn.disabled = false;
+    btn.classList.remove('busy');
   }
 }
 
+const primaryOf = (res) => res.primaryReason || (Array.isArray(res.reasons) ? [...res.reasons].sort((a, b) => (b.severity === 'block') - (a.severity === 'block')).find((x) => x.severity !== 'info') : null) || null;
+
 function decisionCard(r, res, animate) {
-  const d = DECISION[res.decision] || { sub: '', tone: 'neutral' };
+  const sys = DECISION[res.decision] || { sub: '', tone: 'neutral' };
+  const fin = res.decision === 'REVIEW' ? finalOf(r) : null; // a person's decision on a held run
   const reasons = Array.isArray(res.reasons) ? res.reasons : [];
   const holds = reasons.filter((x) => x.severity !== 'info').sort((a, b) => (b.severity === 'block') - (a.severity === 'block'));
   const notes = reasons.filter((x) => x.severity === 'info');
   const actions = Array.isArray(res.nextActions) ? res.nextActions : [];
-  const p = res.payment;
   const email = res.vendorEmail;
+  const primary = primaryOf(res);
   const reasonRow = (x) => {
     const sv = SEVERITY[x.severity] || SEVERITY.info;
-    return html`<li class="reason"><span class="tone-text t-${sv.tone}">${icon(sv.icon, 14, sv.label)}</span><span><span class="code">${x.code}</span> ${x.message || ''}</span></li>`;
+    return html`<li class="reason"><span class="tone-text t-${sv.tone}">${icon(sv.icon, 14, sv.label)}</span>
+      <span><span class="reason-label">${reasonLabel(x)}</span>${x.code ? html` <span class="reason-code mono">${x.code}</span>` : ''}
+      ${x.message ? html`<span class="reason-msg">${prose(x.message)}</span>` : ''}</span></li>`;
   };
   const body = [
+    fin && res.explanation && html`<h3 class="mini-title">Why the system held it</h3><p class="explanation">${prose(res.explanation)}</p>`,
     holds.length && html`<h3 class="mini-title">Reasons</h3><ul class="reasons">${holds.map(reasonRow)}</ul>`,
     notes.length && html`<h3 class="mini-title">Notes</h3><ul class="reasons notes">${notes.map(reasonRow)}</ul>`,
-    actions.length && html`<h3 class="mini-title">Next actions</h3><ul class="actions">${actions.map((a) => html`<li><label><input type="checkbox"><span>${a}</span></label></li>`)}</ul>`,
+    actions.length && html`<h3 class="mini-title">Next actions</h3><ul class="actions">${actions.map((a, i) => html`<li><input type="checkbox" id="na-${r.id}-${i}"><label for="na-${r.id}-${i}">${prose(a)}</label></li>`)}</ul>`,
     email && emailBlock(email),
-    res.decision === 'REVIEW' && reviewBox(r),
+    res.decision === 'REVIEW' && !fin && reviewForm(r, res),
   ].filter(Boolean);
-  return html`<article class="decision t-${d.tone} ${animate ? 'enter' : ''}" aria-label="Decision: ${d.sub || res.decision}">
-    <div class="decision-top">
+  const route = res.route ? html`<div class="route"><span class="route-label">Routed to</span><strong>${res.route}</strong></div>` : '';
+  const top = fin ? finalTop(fin, sys, primary, route) : html`
       <div class="decision-row">
-        <div class="decision-id"><span class="tone-text">${icon(d.icon || 'info', 22)}</span><span><span class="decision-word tone-text">${res.decision}</span><span class="decision-sub">${d.sub}</span></span></div>
-        ${res.route ? html`<div class="route"><span class="route-label">Routed to</span><strong>${res.route}</strong></div>` : ''}
+        <div class="decision-id"><span class="tone-text">${icon(sys.icon || 'info', 22)}</span><span>
+          <span class="decision-line"><span class="decision-word tone-text">${res.decision}</span>${primary && res.decision !== 'APPROVE' ? html`<span class="reason-pill" title="${primary.code || ''}">${reasonLabel(primary)}</span>` : ''}</span>
+          <span class="decision-sub">${sys.sub}</span></span></div>
+        ${route}
       </div>
-      ${res.headline ? html`<p class="headline">${res.headline}</p>` : ''}
-      ${res.explanation ? html`<p class="explanation">${res.explanation}</p>` : ''}
-      ${p && p.amount != null ? html`<p class="payment"><span class="payment-label">Scheduled</span><span class="mono strong">${money(p.amount, p.currency)}</span>${p.scheduledFor ? html`<span>on ${day(p.scheduledFor)}</span>` : ''}</p>` : ''}
-    </div>
+      ${res.headline ? html`<p class="headline">${prose(res.headline)}</p>` : ''}
+      ${res.explanation ? html`<p class="explanation">${prose(res.explanation)}</p>` : ''}
+      ${paymentLine(res.payment)}`;
+  const tone = fin ? DECISION[fin.decision]?.tone || 'neutral' : sys.tone;
+  return html`<article class="decision t-${tone} ${animate ? 'enter' : ''}" aria-label="Decision: ${fin ? `${DECISION[fin.decision]?.sub || fin.decision} by a reviewer` : sys.sub || res.decision}">
+    <div class="decision-top">${top}</div>
     ${body.length ? html`<div class="decision-body">${body}</div>` : ''}
   </article>`;
+}
+
+const paymentLine = (p) => (p && p.amount != null ? html`<p class="payment"><span class="payment-label">Scheduled</span><span class="mono strong">${money(p.amount, p.currency)}</span>${p.scheduledFor ? html`<span>on ${day(p.scheduledFor)}</span>` : ''}</p>` : '');
+
+/** The top of a held run once a person decided: their outcome first, the system's recommendation beneath. */
+function finalTop(fin, sys, primary, route) {
+  const ok = fin.decision === 'APPROVE';
+  const d = DECISION[fin.decision] || DECISION.REJECT;
+  const rv = fin.review || {};
+  const who = fin.reviewer || rv.reviewer;
+  return html`<div class="decision-row">
+      <div class="decision-id"><span class="tone-text">${icon(d.icon, 22)}</span><span>
+        <span class="final-word tone-text">${ok ? 'Approved' : 'Rejected'} by ${who || 'reviewer'}</span>
+        <span class="decision-sub">Human decision${fin.at ? ` · ${when(fin.at)}` : ''}</span></span></div>
+      ${route}
+    </div>
+    ${rv.note ? html`<blockquote class="review-note">“${rv.note}”</blockquote>` : ''}
+    ${rv.callbackVerified ? html`<p class="callback-ok">${icon('check', 14)} Confirmed by call-back to the number in the vendor master</p>` : ''}
+    ${ok ? paymentLine(fin.payment) : ''}
+    <p class="system-rec">System recommendation: <span class="tone-text t-${sys.tone}">${sys.sub}</span>${primary ? html` — ${reasonLabel(primary)}` : ''}</p>`;
 }
 
 function emailBlock(e) {
@@ -580,43 +730,82 @@ function emailBlock(e) {
   </details>`;
 }
 
-function reviewBox(r) {
-  const rv = r.review;
-  if (rv) {
-    const ok = rv.action === 'approve';
-    return html`<div class="reviewed t-${ok ? 'approve' : 'reject'}"><span class="tone-text">${icon(ok ? 'passed' : 'failed', 16)}</span>
-      <span><strong>${ok ? 'Approved by reviewer' : 'Rejected by reviewer'}</strong> <span class="muted mono">${clock(rv.at)}</span>
-      ${rv.note ? html`<span class="reviewed-note">“${rv.note}”</span>` : ''}</span></div>`;
-  }
-  return html`<div class="review-box">
+function vendorContact(r) {
+  const v = r.stages.find((s) => s.key === 'vendor')?.data?.vendor || {};
+  return { name: v.name || r.vendor_name || r.extraction?.vendor?.name || 'the vendor', phone: v.phone || null };
+}
+
+function reviewForm(r, res) {
+  const needsCall = (res.reasons || []).some((x) => CALLBACK_CODES.includes(x.code));
+  const v = vendorContact(r);
+  let name = '';
+  try { name = localStorage.getItem(NAME_KEY) || ''; } catch { /* ignore */ }
+  return html`<div class="review-box" id="review-form" role="group" aria-label="Human review">
     <h3 class="mini-title">Human review</h3>
-    <label class="field-label" for="review-note">Note for the audit trail</label>
-    <textarea id="review-note" rows="2" placeholder="What did you check? For example: called the vendor on the number on file."></textarea>
+    <div class="review-fields">
+      <div><label class="field-label" for="review-name">Your name</label>
+        <input type="text" id="review-name" class="input" autocomplete="name" required minlength="2" value="${name}" placeholder="For example: Priya N."></div>
+      <div><label class="field-label" for="review-note">Note</label>
+        <textarea id="review-note" rows="2" required minlength="3" placeholder="What did you check? It goes on the audit trail."></textarea></div>
+    </div>
+    ${needsCall ? html`<div class="callback"><input type="checkbox" id="review-callback">
+      <label for="review-callback">I called <strong>${v.name}</strong> on the number in our vendor master${v.phone ? html`, <span class="mono nowrap">${v.phone}</span>,` : ''} and confirmed the change.</label></div>` : ''}
     <div class="review-actions">
-      <button type="button" class="btn approve" data-review="approve">${icon('check', 14)}Approve anyway</button>
-      <button type="button" class="btn reject" data-review="reject">Reject</button>
+      <button type="button" class="btn approve" data-review="approve" disabled>${icon('check', 14)}Approve anyway</button>
+      <button type="button" class="btn reject" data-review="reject" disabled>Reject</button>
+      <span class="review-hint muted small" id="review-hint" aria-live="polite"></span>
     </div>
     <p class="form-error" id="review-error" role="alert"></p>
   </div>`;
 }
 
-async function submitReview(action, btn) {
-  const c = cur;
-  const note = $('#review-note')?.value.trim() || '';
+/** Enables Approve / Reject only when the form is complete, and says what is missing. */
+function validateReview() {
+  const f = $('#review-form');
+  if (!f || f.dataset.busy) return;
+  const name = $('#review-name').value.trim(), note = $('#review-note').value.trim();
+  const cb = $('#review-callback');
+  const base = name.length >= 2 && note.length >= 3;
+  const missing = [name.length < 2 && 'your name', note.length < 3 && 'a note'].filter(Boolean);
+  $('[data-review="reject"]').disabled = !base;
+  $('[data-review="approve"]').disabled = !base || (cb && !cb.checked);
+  $('#review-hint').textContent = missing.length ? `Add ${missing.join(' and ')} to decide.`
+    : cb && !cb.checked ? 'Approving needs the call-back confirmed.' : '';
+}
+
+function onReviewInput(e) {
+  if (!e.target.closest?.('#review-form')) return;
   const err = $('#review-error');
+  if (err) err.textContent = '';
+  validateReview();
+}
+
+async function submitReview(action, btn) {
+  const c = cur, f = $('#review-form');
+  const reviewer = $('#review-name')?.value.trim() || '';
+  const note = $('#review-note')?.value.trim() || '';
+  const callbackVerified = !!$('#review-callback')?.checked;
+  const err = $('#review-error');
+  try { localStorage.setItem(NAME_KEY, reviewer); } catch { /* ignore */ }
+  f.dataset.busy = '1';
   root.querySelectorAll('[data-review]').forEach((b) => { b.disabled = true; });
   btn.classList.add('busy');
   try {
-    await api(`/api/runs/${encodeURIComponent(c.id)}/review`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action, note }) });
+    await api(`/api/runs/${encodeURIComponent(c.id)}/review`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action, reviewer, note, callbackVerified }) });
     const run = await api(`/api/runs/${encodeURIComponent(c.id)}`);
     if (c !== cur) return;
-    c.run.review = run.review || { action, note, at: new Date().toISOString() };
+    // v1 servers drop the reviewer name and call-back flag; keep what the person typed so the card stays truthful.
+    c.run.review = { action, reviewer, note, callbackVerified, at: new Date().toISOString(), ...(run.review || {}) };
+    if (run.final) c.run.final = run.final;
     renderDecisionSlot(true);
+    loadSamples();
     runsChanged();
   } catch (e) {
-    if (err) err.textContent = `Couldn't save the review: ${e.message}`;
-    root.querySelectorAll('[data-review]').forEach((b) => { b.disabled = false; });
+    if (c !== cur) return;
+    delete f.dataset.busy;
+    if (err) err.textContent = e.status === 400 ? e.message : `Couldn't save the review: ${e.message}`;
     btn.classList.remove('busy');
+    validateReview();
   }
 }
 
@@ -664,7 +853,10 @@ function onRunClick(e) {
     return;
   }
   const rv = t.closest('[data-review]');
-  if (rv) return submitReview(rv.dataset.review, rv);
+  if (rv) return rv.disabled ? undefined : submitReview(rv.dataset.review, rv);
+  const rt = t.closest('[data-retry]');
+  if (rt) return retryRun(rt);
+  if (t.closest('[data-doc-toggle]')) return setDocHidden(!docHidden);
   const dt = t.closest('[data-doctab]');
   if (dt && cur) {
     cur.docTab = dt.dataset.doctab;

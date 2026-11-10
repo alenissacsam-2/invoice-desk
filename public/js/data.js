@@ -45,7 +45,7 @@ function render(d) {
       <p class="page-sub">Loaded from <span class="mono">data/*.csv</span> on boot — the procurement spreadsheet. Ledger updates as runs are approved.</p></div></header>
     <div class="data-grid">
       <div class="data-main">
-        ${section('pos', 'Purchase orders', poTable(pos, vName))}
+        ${section('pos', 'Purchase orders', poTable(pos, vName, d.policy))}
         ${section('vendors', 'Vendors', vendorTable(vendors))}
         ${section('receipts', 'Goods receipts', receiptTable(receipts, pos))}
         ${section('ledger', 'Ledger', ledgerTable(ledger, vName))}
@@ -62,12 +62,22 @@ function render(d) {
 const card = (inner) => html`<div class="card tbl-card"><div class="tbl-wrap">${inner}</div></div>`;
 const none = (cols, text) => html`<tr><td colspan="${cols}" class="muted pad-cell">${text}</td></tr>`;
 
-function poTable(pos, vName) {
+/** Over-invoiced within the header tolerance is review-toned, not red (the invoice was allowed). */
+function overTone(p, policy) {
+  const total = +p.net_total || 0, over = (+p.invoiced || 0) - total;
+  if (over <= 0.005) return '';
+  const a = policy?.headerAbs, abs = a == null ? null : typeof a === 'object' ? a[p.currency] ?? a.default : a;
+  const within = policy?.headerPct != null && over <= total * policy.headerPct / 100 + 0.005 && (abs == null || over <= abs + 0.005);
+  return within ? 'warn' : 'fail';
+}
+
+function poTable(pos, vName, policy) {
   return card(html`<table class="tbl po-tbl">
     <thead><tr><th>PO</th><th>Vendor</th><th>Type</th><th>Requester</th><th class="r">Net total</th><th class="r">Invoiced</th><th class="r">Remaining</th><th class="bar-col"><span class="sr-only">Invoiced share</span></th></tr></thead>
     <tbody>${pos.length ? pos.map((p) => {
       const total = +p.net_total || 0, inv = +p.invoiced || 0;
       const share = total ? inv / total : 0;
+      const tone = overTone(p, policy);
       const open = openPos.has(p.po_number);
       const id = `pol-${String(p.po_number).replace(/[^\w-]/g, '')}`;
       return html`<tr>
@@ -77,8 +87,8 @@ function poTable(pos, vName) {
         <td class="nowrap">${p.requester || '—'}</td>
         <td class="num">${money(p.net_total, p.currency)}</td>
         <td class="num">${money(p.invoiced ?? 0, p.currency)}</td>
-        <td class="num ${p.remaining < 0 ? 'cell-fail' : ''}">${money(p.remaining ?? total - inv, p.currency)}</td>
-        <td class="bar-col"><span class="meter wide ${share > 1 ? 'over' : ''}" title="${Math.round(share * 100)}% invoiced"><i style="width:${Math.min(1, share) * 100}%"></i></span></td>
+        <td class="num ${tone ? 'cell-' + tone : ''}" ${tone === 'warn' ? raw('title="Over the PO, within the header tolerance"') : ''}>${money(p.remaining ?? total - inv, p.currency)}</td>
+        <td class="bar-col"><span class="meter wide ${tone ? 'over ' + tone : ''}" title="${Math.round(share * 100)}% invoiced"><i style="width:${Math.min(1, share) * 100}%"></i></span></td>
       </tr>
       <tr class="sub-row" id="${id}" ${open ? '' : 'hidden'}><td colspan="8"><table class="tbl inner">
         <thead><tr><th>Line</th><th>Item code</th><th>Description</th><th class="r">Ordered</th><th class="r">Received</th><th class="r">Invoiced</th><th class="r">Unit price</th></tr></thead>
@@ -124,20 +134,32 @@ function ledgerTable(ledger, vName) {
       : none(7, 'No ledger entries yet. Approved and held invoices appear here.')}</tbody></table>`);
 }
 
-function policyCard(p) {
+/** headerAbs is {USD:100, INR:8000, default:100} (v2) or a plain number (v1) → "at most $100 (₹8,000 for INR)". */
+function absLimit(a) {
+  if (a == null) return '';
+  if (typeof a !== 'object') return ` and at most ${num(a, null, 0)}`;
+  const base = a.USD ?? a.default;
+  const others = Object.entries(a).filter(([c, v]) => c !== 'USD' && c !== 'default' && v != null);
+  const extra = others.map(([c, v]) => `${money(v, c, 0)}\u00a0for\u00a0${c}`).join(', ');
+  return base == null ? (extra ? ` and at most ${extra}` : '') : ` and at most ${money(base, 'USD', 0)}${extra ? ` (${extra})` : ''}`;
+}
+
+export function policyCard(p) {
   if (!p || typeof p !== 'object') return '';
   const has = (k) => p[k] != null;
   const rows = [
     has('unitPricePct') && ['Unit price variance', `±${p.unitPricePct}%`, 'per line vs PO price'],
-    has('headerPct') && ['Header variance', `±${p.headerPct}%${has('headerAbs') ? ` and ≤ ${num(p.headerAbs, null, 0)}` : ''}`, 'net vs PO, in PO currency; both must hold'],
+    has('headerPct') && ['Header variance', `±${p.headerPct}%${absLimit(p.headerAbs)}`, 'net vs PO, in PO currency; both must hold'],
     ['Quantity over receipt', String(p.qtyOverReceipt ?? p.qtyTolerance ?? 0), 'goods: billed ≤ received − already invoiced'],
-    has('poInferMin') && ['PO inference', `≥ ${p.poInferMin}`, has('poAmbiguityMargin') ? `match score; runner-up must trail by ${p.poAmbiguityMargin}` : 'match score'],
-    has('lowConfidence') && ['Low confidence', `< ${p.lowConfidence}`, 'on key extracted fields'],
-    has('dupWindowDays') && ['Duplicate window', `${p.dupWindowDays} days`, 'same vendor and amount'],
+    has('arithAbs') && ['Arithmetic rounding', `±${num(p.arithAbs)}`, 'lines, tax and total must add up within this'],
+    has('poInferMin') && ['PO inference', `≥ ${num(p.poInferMin)}`, has('poAmbiguityMargin') ? `match score; the runner-up must trail by ${num(p.poAmbiguityMargin)}` : 'match score'],
+    has('lowConfidence') && ['Low confidence', `< ${num(p.lowConfidence)}`, 'on key extracted fields'],
+    has('maxAgeDays') && ['Invoice age', `≤ ${p.maxAgeDays} days`, 'older, or dated in the future, is held'],
+    has('dupWindowDays') && ['Duplicate window', `${p.dupWindowDays} days`, 'same vendor and amount, different number'],
   ].filter(Boolean);
   return html`<div class="card policy">
     <h2 class="section-title">Matching policy</h2>
-    <dl>${rows.map(([k, v, note]) => html`<div class="policy-row"><dt>${k}</dt><dd class="mono">${v}</dd><dd class="policy-note">${note}</dd></div>`)}</dl>
+    <dl>${rows.map(([k, v, note]) => html`<div class="policy-row"><dt>${k}</dt><dd class="mono${v.length > 14 ? ' wide' : ''}">${v}</dd><dd class="policy-note">${note}</dd></div>`)}</dl>
     <p class="policy-foot">Edit in <span class="mono">src/config.js</span></p>
   </div>`;
 }

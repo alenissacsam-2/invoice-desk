@@ -33,10 +33,11 @@ export const runsChanged = () => window.dispatchEvent(new Event('runs-changed'))
 const nf = new Map();
 const fmt = (locale, opts) => { const k = locale + JSON.stringify(opts); if (!nf.has(k)) nf.set(k, new Intl.NumberFormat(locale, opts)); return nf.get(k); };
 
-export function money(n, cur) {
+export function money(n, cur, digits) {
   if (n == null || n === '' || isNaN(n)) return '—';
-  if (!cur) return num(n);
-  try { return fmt(cur === 'INR' ? 'en-IN' : 'en-US', { style: 'currency', currency: cur }).format(n); } catch { return `${num(n)} ${cur}`; }
+  if (!cur) return num(n, null, digits ?? 2);
+  const o = digits == null ? {} : { minimumFractionDigits: digits, maximumFractionDigits: digits };
+  try { return fmt(cur === 'INR' ? 'en-IN' : 'en-US', { style: 'currency', currency: cur, ...o }).format(n); } catch { return `${num(n, cur, digits ?? 2)} ${cur}`; }
 }
 /** Grouped number without currency symbol; Indian grouping for INR. */
 export function num(n, cur, digits = 2) {
@@ -62,6 +63,12 @@ export function day(ymd) {
   if (!m) return ymd || '—';
   return new Date(Date.UTC(+m[1], m[2] - 1, +m[3])).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric', timeZone: 'UTC' });
 }
+/** Server prose: ISO dates → '15 Nov 2026', and '((510) 555-0142)' → '(510) 555-0142'. */
+export const prose = (t) => (t == null ? '' : String(t)
+  .replace(/\b(\d{4}-\d{2}-\d{2})\b/g, (m) => day(m))
+  .replace(/\(\(([^()]*)\)([^()]*)\)/g, '($1)$2'));
+/** ISO timestamp → '10 Nov 2026, 14:03'. */
+export const when = (iso) => (valid(iso) ? `${day(new Date(iso).toISOString())}, ${new Date(iso).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}` : '');
 export function ago(iso) {
   if (!valid(iso)) return '—';
   const s = (Date.now() - new Date(iso)) / 1000;
@@ -82,9 +89,27 @@ export const CHECK_ICON = { pass: 'passed', warn: 'warning', fail: 'failed', inf
 export const CHECK_TONE = { pass: 'approve', warn: 'review', fail: 'reject', info: 'neutral' };
 export const SEVERITY = { block: { icon: 'failed', tone: 'reject', label: 'Blocks payment' }, hold: { icon: 'warning', tone: 'review', label: 'Hold' }, info: { icon: 'info', tone: 'neutral', label: 'Note' } };
 
+const ACRONYM = { po: 'PO', id: 'ID', ai: 'AI', gst: 'GST', gstin: 'GSTIN' };
+/** QTY_EXCEEDS_RECEIPT → 'Qty exceeds receipt' (fallback when the server sends no label). */
+export const humanize = (code) => String(code || '').toLowerCase().split('_').filter(Boolean)
+  .map((w, i) => ACRONYM[w] || (i ? w : w[0].toUpperCase() + w.slice(1))).join(' ');
+export const reasonLabel = (x) => (x ? x.label || humanize(x.code) || x.message || '' : '');
+export const isCode = (s) => /^[A-Z][A-Z0-9]*(_[A-Z0-9]+)+$/.test(s || '');
+
+/** The outcome that stands once a person decided: v2 `final` / `final_decision`, else v1 `review`. Null while nobody has. */
+export function finalOf(r) {
+  if (!r) return null;
+  const rv = typeof r.review === 'string' ? { action: r.review } : r.review || null;
+  const f = r.final && typeof r.final === 'object' ? r.final : null;
+  const decision = f?.decision ?? r.final_decision ?? (rv ? (rv.action === 'approve' ? 'APPROVE' : 'REJECT') : null);
+  if (!decision) return null;
+  const by = f?.by ?? (rv || r.reviewer || r.decision === 'REVIEW' ? 'reviewer' : 'system');
+  return { decision, by, reviewer: rv?.reviewer ?? r.reviewer ?? null, at: f?.at ?? rv?.at ?? null, payment: f?.payment ?? null, review: rv };
+}
+
 export function decisionChip(decision, status) {
   if (status === 'running') return html`<span class="chip t-accent"><span class="spin sm" aria-hidden="true"></span>Running</span>`;
-  if (status === 'error') return html`<span class="chip t-reject">${icon('failed', 12)}Error</span>`;
+  if (status === 'error') return html`<span class="chip t-neutral">${icon('info', 12)}Couldn't finish</span>`;
   const d = DECISION[decision];
   if (!d) return html`<span class="chip">${decision || '—'}</span>`;
   return html`<span class="chip t-${d.tone}">${icon(d.icon, 12)}${d.chip}</span>`;

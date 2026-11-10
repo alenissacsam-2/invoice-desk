@@ -1,12 +1,13 @@
 // Runs dashboard: KPIs, hold/reject reasons, filterable history table, demo-set runner.
-import { api, html, money, dur, ago, stamp, pct, icon, decisionChip, runsChanged, SEVERITY, DECISION } from './util.js';
+import { api, html, money, dur, ago, stamp, pct, icon, decisionChip, runsChanged, reasonLabel, humanize, finalOf, SEVERITY, DECISION } from './util.js';
 
 const FILTERS = [
   ['all', 'All', () => true],
   ['APPROVE', 'Approved', (r) => r.decision === 'APPROVE'],
   ['REVIEW', 'Review', (r) => r.decision === 'REVIEW'],
   ['REJECT', 'Rejected', (r) => r.decision === 'REJECT'],
-  ['awaiting', 'Awaiting human', (r) => r.decision === 'REVIEW' && !reviewOf(r)],
+  // v2 rows carry final_decision (null until a person decides); v1 rows only have review.
+  ['awaiting', 'Awaiting human', (r) => r.status !== 'error' && r.decision === 'REVIEW' && ('final_decision' in r ? r.final_decision == null : !reviewOf(r))],
 ];
 
 let root = null;
@@ -40,9 +41,9 @@ async function load() {
 
 const vendorOf = (r) => r.vendor_name || r.vendor?.name || r.vendor_id || 'Unknown vendor';
 const routeOf = (r) => r.route ?? r.result?.route ?? null;
-// List rows may carry the main reason as an object ({code,severity,message}) or as a plain message string.
+// List rows carry the main reason as an object ({code,label,severity,message}) or, in v1, sometimes a plain message string.
 const reasonOf = (r) => {
-  const m = r.main_reason ?? r.mainReason ?? (r.result?.reasons || []).find((x) => x.severity !== 'info') ?? null;
+  const m = r.main_reason ?? r.mainReason ?? r.result?.primaryReason ?? (r.result?.reasons || []).find((x) => x.severity !== 'info') ?? null;
   return typeof m === 'string' ? { code: null, message: m, severity: r.decision === 'REJECT' ? 'block' : 'hold' } : m;
 };
 const reviewOf = (r) => (typeof r.review === 'string' ? { action: r.review } : r.review || null);
@@ -64,6 +65,8 @@ function overview(s, runs) {
   const by = s.byDecision || {};
   const decided = (by.APPROVE || 0) + (by.REVIEW || 0) + (by.REJECT || 0);
   const running = runs.filter((r) => r.status === 'running').length;
+  const awaiting = s.final?.awaiting ?? s.awaitingReview ?? 0;
+  const decidedByPerson = s.humanReviewed ?? Math.max(0, (by.REVIEW || 0) - awaiting);
   const vals = Object.entries(s.valueApproved || {}).filter(([, v]) => v);
   const [first, ...rest] = vals;
   const tile = (label, value, sub, tone) => html`<div class="kpi card">
@@ -75,15 +78,15 @@ function overview(s, runs) {
     <div class="kpis">
       ${tile('Invoices processed', s.total ?? runs.length, running ? `${running} running now` : `${decided} decided`)}
       ${tile('Auto-approved', by.APPROVE ?? 0, decided ? `${pct(s.autoApprovalRate)} straight through` : 'Nothing decided yet', 'APPROVE')}
-      ${tile('On hold', by.REVIEW ?? 0, `${s.awaitingReview ?? 0} awaiting a person`, 'REVIEW')}
+      ${tile('On hold', awaiting, by.REVIEW ? `awaiting a person · ${decidedByPerson} decided` : 'Nothing waiting', 'REVIEW')}
       ${tile('Rejected', by.REJECT ?? 0, 'Blocked before payment', 'REJECT')}
       ${tile('Value approved', first ? money(first[1], first[0]) : money(0, 'USD'), rest.length ? html`<span class="mono">+ ${rest.map(([c, v]) => money(v, c)).join(' · ')}</span>` : 'Scheduled for payment')}
-      ${tile('Median processing', s.medianMs != null ? dur(s.medianMs) : '—', 'Per invoice, end to end')}
+      ${tile('Median read time', s.medianReadMs != null ? dur(s.medianReadMs) : '—', 'AI extraction; rules add < 50 ms')}
     </div>
     ${reasons.length ? html`<div class="card reasons-card">
       <h2 class="section-title">Why invoices were held or rejected</h2>
       <ul class="bars">${reasons.map((x) => { const sv = SEVERITY[x.severity] || SEVERITY.hold; return html`<li>
-        <span class="bar-label code" title="${sv.label}">${x.code}</span>
+        <span class="bar-label" title="${x.code} · ${sv.label}">${reasonLabel(x)}</span>
         <span class="bar-track"><i class="t-${sv.tone}" style="width:${(x.count / max) * 100}%"></i></span>
         <span class="bar-count mono">${x.count}</span></li>`; })}</ul>
       <p class="legend"><span><i class="t-reject"></i>Blocks payment</span><span><i class="t-review"></i>Hold for review</span></p>
@@ -104,16 +107,17 @@ function table(runs) {
 function row(r) {
   const reason = reasonOf(r);
   const sv = reason ? SEVERITY[reason.severity] || SEVERITY.hold : null;
-  const rv = reviewOf(r);
+  const f = finalOf(r);
+  const human = f && f.by === 'reviewer' ? f : null;
   return html`<tr class="run-row">
     <td class="mono muted nowrap" title="${stamp(r.created_at)}">${ago(r.created_at)}</td>
     <td class="cell-vendor"><a class="row-link" href="#/run/${encodeURIComponent(r.id)}" data-fk="row-${r.id}">${vendorOf(r)}</a><span class="cell-file mono" title="${r.filename}">${r.filename || ''}</span></td>
     <td class="mono nowrap">${r.invoice_number || html`<span class="muted">—</span>`}</td>
     <td class="num">${r.total != null ? money(r.total, r.currency) : html`<span class="muted">—</span>`}</td>
     <td class="mono nowrap">${r.po_number || html`<span class="muted">—</span>`}${r.po_inferred ? html`<span class="inferred" title="PO inferred from lines and amount">inferred</span>` : ''}</td>
-    <td class="nowrap">${decisionChip(r.decision, r.status)}${rv ? html`<span class="reviewed-line tone-text t-${rv.action === 'approve' ? 'approve' : 'reject'}">→ ${rv.action === 'approve' ? 'Approved' : 'Rejected'} by reviewer</span>` : ''}</td>
+    <td class="nowrap">${decisionChip(r.decision, r.status)}${human ? html`<span class="reviewed-line tone-text t-${DECISION[human.decision]?.tone || 'neutral'}">${human.decision === 'APPROVE' ? 'Approved' : 'Rejected'} by ${human.reviewer || 'reviewer'}</span>` : ''}</td>
     <td class="nowrap">${routeOf(r) || html`<span class="muted">—</span>`}</td>
-    <td>${!reason ? html`<span class="muted">—</span>` : reason.code ? html`<span class="code tone-text t-${sv.tone}" title="${reason.message || ''}">${reason.code}</span>` : html`<span class="reason-text" title="${reason.message}">${reason.message}</span>`}</td>
+    <td>${!reason ? html`<span class="muted">—</span>` : reason.code ? html`<span class="reason-cell" title="${reason.code}${reason.message ? ` · ${reason.message}` : ''}"><span class="tone-text t-${sv.tone}">${icon(sv.icon, 12)}</span>${reason.label || humanize(reason.code)}</span>` : html`<span class="reason-text" title="${reason.message}">${reason.message}</span>`}</td>
     <td class="num muted">${r.status === 'running' ? '' : dur(r.ms)}</td>
   </tr>`;
 }
