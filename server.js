@@ -22,6 +22,8 @@ const TYPES = {
 const SECURITY_HEADERS = {
   'X-Content-Type-Options': 'nosniff',
   'Referrer-Policy': 'no-referrer',
+  // Small files, frequent deploys: never let a browser mix an old module with a new one.
+  'Cache-Control': 'no-cache',
   'Content-Security-Policy': "default-src 'self'; script-src 'self'; style-src 'self' https://fonts.googleapis.com 'unsafe-inline'; "
     + "font-src https://fonts.gstatic.com; img-src 'self' data: blob:; frame-src 'self'; object-src 'none'; base-uri 'none'; "
     + "frame-ancestors 'self'; connect-src 'self'",
