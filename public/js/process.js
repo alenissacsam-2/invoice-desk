@@ -17,8 +17,10 @@ const STAGES = [
 ];
 const DESC = Object.fromEntries(STAGES.map(([k, , d]) => [k, d]));
 const STAGE_ICON = Object.fromEntries(STAGES.map(([k, , , i]) => [k, i]));
-const STATUS_WORD = { pending: 'Waiting', running: 'In progress', passed: 'Passed', warning: 'Warning', failed: 'Failed', skipped: 'Skipped' };
-const MARK = { passed: 'pass', warning: 'warn', failed: 'fail', skipped: 'skip' };
+const STATUS_WORD = { pending: 'Waiting', running: 'In progress', passed: 'Passed', warning: 'Warning', failed: 'Failed', skipped: 'Skipped', blocked: 'Blocks payment' };
+const MARK = { passed: 'pass', warning: 'warn', failed: 'fail', skipped: 'skip', blocked: 'fail' };
+// The stage that raises each block-severity reason (src/rules.js), so a rejected slip marks its cause in vermilion.
+const BLOCK_STAGE = { NOT_AN_INVOICE: 'validate', VENDOR_BLOCKED: 'vendor', DUPLICATE_INVOICE: 'duplicate' };
 const CHECK_PEN = { pass: ['pass', 'Passed'], warn: ['warn', 'Warning'], fail: ['fail', 'Failed'], info: ['info', 'Note'] };
 const DESKS = ['AP file', 'Treasury & Security', 'Procurement', 'Receiving', 'AP clerk', 'Return to vendor'];
 const EXPECT = { APPROVE: 'approval', REVIEW: 'a hold', REJECT: 'rejection' };
@@ -47,8 +49,19 @@ function setDocHidden(v) {
 }
 const isError = (r) => r.status === 'error' || !!r.result?.errorKind || r.result?.error === true;
 
-/** A stable four-digit slip number from the run id. */
-const serial = (id) => { let h = 7; for (const ch of String(id || '')) h = (h * 31 + ch.charCodeAt(0)) % 9973; return String(h + 1).padStart(4, '0'); };
+/** Slip number: a sample's own number ("07_..." is 0007); otherwise the run's place in the register, oldest first. */
+async function fillSerial(c) {
+  const r = c.run;
+  let n = r.source === 'sample' ? sampleNo(r.filename) : '';
+  if (!n) {
+    const runs = await api('/api/runs').catch(() => null);
+    const list = (Array.isArray(runs) ? runs : runs?.runs || []).slice().sort((a, b) => String(a.created_at).localeCompare(String(b.created_at)));
+    const i = list.findIndex((x) => x.id === r.id);
+    n = i >= 0 ? String(i + 1) : '';
+  }
+  const el = c === cur && $('#serial-n');
+  if (el && n) { el.textContent = n.padStart(4, '0'); el.classList.remove('blank-n'); el.removeAttribute('aria-label'); }
+}
 const localDay = (iso) => (iso && !isNaN(new Date(iso)) ? new Date(iso).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }) : '');
 
 export function mountProcess(main, id) {
@@ -378,7 +391,7 @@ function renderRun() {
           <div class="sh-meta" id="run-head"></div>
         </div>
         <div class="sh-right">
-          <p class="serial">No. <span class="serial-n">${serial(r.id)}</span></p>
+          <p class="serial">No. <span class="serial-n blank-n" id="serial-n" aria-label="not yet numbered">0000</span></p>
           <div class="stamp-box" id="stamp-box"></div>
         </div>
       </header>
@@ -401,6 +414,7 @@ function renderRun() {
   renderProgress();
   renderDecisionSlot(false);
   renderDoc();
+  fillSerial(cur);
 }
 
 function renderHead() {
@@ -484,7 +498,15 @@ function renderProgress() {
 }
 
 // ---- stage rows
-const isOpen = (s) => (cur.manual.has(s.key) ? cur.manual.get(s.key) : ['running', 'warning', 'failed'].includes(s.status));
+// The decision row stays shut once Remarks says the same thing below.
+const isOpen = (s) => (cur.manual.has(s.key) ? cur.manual.get(s.key) : ['running', 'warning', 'failed'].includes(s.status) && !(s.key === 'decision' && s.data?.decision));
+
+/** On a rejected run, the stage that raised a block-severity reason shows as blocking payment. */
+function shownStatus(s) {
+  const res = cur?.run?.result?.decision ? cur.run.result : cur?.run?.stages.find((x) => x.key === 'decision')?.data;
+  if (res?.decision !== 'REJECT' || !['warning', 'failed'].includes(s.status)) return s.status;
+  return (res.reasons || []).some((x) => x.severity === 'block' && BLOCK_STAGE[x.code] === s.key) ? 'blocked' : s.status;
+}
 
 function stageRow(s, n, summary, drawn) {
   const mark = MARK[s.status];
@@ -508,7 +530,8 @@ function renderStage(key, animate) {
   const s = c.run.stages.find((x) => x.key === key);
   if (!li || !s) return;
   const open = isOpen(s) && s.status !== 'pending';
-  const sig = JSON.stringify([s, open]);
+  const status = shownStatus(s);
+  const sig = JSON.stringify([s, open, status]);
   if (c.applied.get(key) === sig) return;
   const prevStatus = c.applied.get(key + ':status');
   const changed = animate && prevStatus !== undefined && prevStatus !== s.status;
@@ -516,11 +539,12 @@ function renderStage(key, animate) {
   c.applied.set(key + ':status', s.status);
   const hadFocus = li.contains(document.activeElement);
   const expandable = s.status !== 'pending';
-  const summary = s.summary ? prose(key === 'intake' ? dedupeParts(s.summary) : s.summary) : (s.status === 'running' ? (key === 'extract' ? 'Gemini is reading the document' : 'Running the checks') : DESC[key] || '');
+  const said = key === 'intake' ? dedupeParts(s.summary) : key === 'decision' && s.data?.decision ? spellMore(s.summary, primaryOf(s.data), s.data.reasons || []) : s.summary;
+  const summary = s.summary ? prose(said) : (s.status === 'running' ? (key === 'extract' ? 'Gemini is reading the document' : 'Running the checks') : DESC[key] || '');
   const motion = changed && !reducedMotion();
-  li.className = `stage s-${s.status}${open ? ' open' : ''}`;
+  li.className = `stage s-${status}${open ? ' open' : ''}`;
   li.innerHTML = html`<button type="button" class="stage-head" ${expandable ? '' : raw('disabled')} aria-expanded="${open ? 'true' : 'false'}" ${open ? raw(`aria-controls="sb-${esc(key)}"`) : ''}>
-      ${stageRow(s, c.run.stages.indexOf(s) + 1, summary, motion && !!MARK[s.status])}
+      ${stageRow({ ...s, status }, c.run.stages.indexOf(s) + 1, summary, motion && !!MARK[status])}
       <span class="chev">${expandable ? icon('chev', 16) : ''}</span>
     </button>
     ${open ? html`<div class="stage-body" id="sb-${key}">${stageBody(s)}</div>` : ''}`;
@@ -653,10 +677,6 @@ function vendorBody(d) {
     const f = b.onFile || {}, inv = b.onInvoice;
     const acct = (x) => x?.account ?? x?.account_number ?? x?.bank_account;
     const rout = (x) => x?.routing ?? x?.routing_code ?? x?.bank_routing;
-    if (b.differs) {
-      out.push(html`<div class="notice t-reject"><p class="notice-title">${pen('fail', 18)}Bank details differ from the vendor master</p>
-        <p>Payment is blocked. Verify by calling the number on file${v.phone ? html`, <span class="typed nowrap">${v.phone}</span>` : ''}, never a contact printed on the invoice.</p></div>`);
-    }
     out.push(html`<h3 class="form-h3">Bank details</h3><div class="tbl-wrap"><table class="tbl bank ${b.differs ? 'differs' : ''}">
       <thead><tr><th><span class="sr-only">Source</span></th><th>Bank</th><th>Routing</th><th>Account</th></tr></thead>
       <tbody>
@@ -749,7 +769,7 @@ function renderDecisionSlot(animate = true) {
   if (copies) copies.innerHTML = copiesFooter(o?.copy || null);
   renderStampBox(kind, o, r, animate);
   if (kind === 'error') slot.innerHTML = errorCard(r);
-  else if (kind === 'pending') slot.innerHTML = html`<section class="remarks" aria-labelledby="rm-title"><h2 class="form-h" id="rm-title">Remarks</h2>
+  else if (kind === 'pending') slot.innerHTML = html`<section class="remarks fbox" aria-labelledby="rm-title"><h2 class="fl" id="rm-title">Remarks</h2>
     <div class="ruled-blank" aria-hidden="true"><i></i><i></i><i></i></div>
     <p class="pending-note">The decision, its reasons and the routing are filled in once every check has run.</p></section>`;
   else { slot.innerHTML = decisionCard(r, res, o); validateReview(); }
@@ -763,8 +783,10 @@ function renderStampBox(kind, o, r, animate) {
   const land = animate && o && cur.stampKey !== key && !reducedMotion();
   cur.stampKey = key;
   const at = o?.human?.at || r.final?.at || r.stages.find((s) => s.key === 'decision')?.endedAt || r.created_at;
-  box.innerHTML = html`<span class="fl">Decision</span>${o ? inkStamp(o, localDay(at))
-    : kind === 'error' ? html`<span class="sb-retry"><span class="sb-empty">Not decided. The run stopped before a decision.</span>${r.superseded_by ? '' : html`<button type="button" class="btn sm" data-retry>${icon('retry', 16)}Retry</button>`}</span>`
+  // Inked, the stamp overprints the slip head; until then a dashed box holds its place.
+  box.classList.toggle('inked', !!o);
+  box.innerHTML = o ? inkStamp(o, localDay(at)) : html`<span class="fl">Decision</span>${kind === 'error'
+    ? html`<span class="sb-retry"><span class="sb-empty">Not decided. The run stopped before a decision.</span>${r.superseded_by ? '' : html`<button type="button" class="btn sm" data-retry>${icon('retry', 16)}Retry</button>`}</span>`
     : html`<span class="sb-empty">Stamped here once every check has run</span>`}`;
   if (land) {
     box.querySelector('.stamp')?.classList.add('land');
@@ -822,6 +844,18 @@ async function retryRun(btn) {
 
 const primaryOf = (res) => res.primaryReason || (Array.isArray(res.reasons) ? [...res.reasons].sort((a, b) => (b.severity === 'block') - (a.severity === 'block')).find((x) => x.severity !== 'info') : null) || null;
 
+const lcFirst = (t) => (/^[A-Z]{2}/.test(t) ? t : t.charAt(0).toLowerCase() + t.slice(1));
+
+/** "..., bank details changed (+1 more)." becomes "..., bank details changed and lookalike email domain." */
+function spellMore(headline, primary, reasons) {
+  const m = /\s*\(\+(\d+) more\)/.exec(headline);
+  if (!m || !primary) return headline;
+  const rest = reasons.filter((x) => x.severity === primary.severity && x.code !== primary.code).map((x) => lcFirst(reasonLabel(x)));
+  if (rest.length !== +m[1]) return headline;
+  const words = rest.length > 1 ? `, ${rest.slice(0, -1).join(', ')} and ${rest.at(-1)}` : ` and ${rest[0]}`;
+  return headline.slice(0, m.index) + words + headline.slice(m.index + m[0].length);
+}
+
 function decisionCard(r, res, o) {
   const fin = o?.human || null; // a person's decision on a held run
   const reasons = Array.isArray(res.reasons) ? res.reasons : [];
@@ -829,18 +863,21 @@ function decisionCard(r, res, o) {
   const notes = reasons.filter((x) => x.severity === 'info');
   const actions = Array.isArray(res.nextActions) ? res.nextActions : [];
   const primary = primaryOf(res);
+  const explained = res.explanation || '';
   const reasonRow = (x) => {
     const sv = SEVERITY[x.severity] || SEVERITY.info;
+    // A message the explanation already says is not repeated under its reason.
+    const msg = x.message && !explained.includes(x.message) ? x.message : '';
     return html`<li class="reason"><span class="reason-mark tone-text t-${sv.tone}">${pen(sv.mark, 18, sv.label)}</span>
       <span class="reason-body"><span class="reason-label">${reasonLabel(x)}</span>${x.code ? html`<span class="reason-code">${x.code}</span>` : ''}
-      ${x.message ? html`<span class="reason-msg">${prose(x.message)}</span>` : ''}</span></li>`;
+      ${msg ? html`<span class="reason-msg">${prose(msg)}</span>` : ''}</span></li>`;
   };
   const pay = fin ? (fin.decision === 'APPROVE' ? fin.payment : null) : res.payment;
   const ptone = primary ? (SEVERITY[primary.severity] || SEVERITY.hold).tone : 'neutral';
-  return html`<section class="remarks" aria-labelledby="rm-title">
-      <h2 class="form-h" id="rm-title">Remarks</h2>
-      ${primary && res.decision !== 'APPROVE' ? html`<p class="primary-reason tone-text t-${ptone}" title="${primary.code || ''}">${reasonLabel(primary)}</p>` : ''}
-      ${res.headline ? html`<p class="headline">${prose(res.headline)}</p>` : ''}
+  const headline = res.headline ? spellMore(res.headline, primary, reasons) : primary ? reasonLabel(primary) : '';
+  return html`<section class="remarks fbox" aria-labelledby="rm-title">
+      <h2 class="fl" id="rm-title">Remarks</h2>
+      ${headline ? html`<p class="rm-value typed${res.decision !== 'APPROVE' ? ` tone-text t-${ptone}` : ''}">${prose(headline)}</p>` : ''}
       ${res.explanation ? html`<p class="explanation">${prose(res.explanation)}</p>` : ''}
       ${holds.length ? html`<ul class="reasons">${holds.map(reasonRow)}</ul>` : ''}
       ${notes.length ? html`<h3 class="form-h3">Notes</h3><ul class="reasons notes">${notes.map(reasonRow)}</ul>` : ''}

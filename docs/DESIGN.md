@@ -23,7 +23,7 @@ colors:
 typography:
   stamp-word:
     fontFamily: "'Big Shoulders Display', 'Arial Narrow', sans-serif"
-    fontSize: "40px"
+    fontSize: "64px"
     fontWeight: 900
     lineHeight: 1
     letterSpacing: "0.05em"
@@ -57,7 +57,7 @@ typography:
     lineHeight: 1.5
   form-label:
     fontFamily: "'Public Sans', system-ui, sans-serif"
-    fontSize: "11px"
+    fontSize: "12px"
     fontWeight: 600
     lineHeight: 1.25
     letterSpacing: "0.01em"
@@ -175,8 +175,8 @@ A cool blue-grey desk with white paper on it, one printed-form blue, and three r
 ### Neutral
 - **Desk Blotter** (`desk` `#D4DCE6`, dark `#131922`): page ground and the tear-line notch colour. `desk-tray` (`#C9D3DF`, dark `#0F141C`) is the top bar and in-tray; `desk-edge` (`#A9B7C8`, dark `#2B3546`) is their borders and scrollbars.
 - **White Copy** (`sheet` `#FFFFFF`, dark `#1C2331`): the AP-file sheet, buttons, in-tray slips.
-- **Canary Copy** (`canary-copy` `#FFF5C2`, dark `#2B2713`): slip tint when held for the reviewer.
-- **Pink Copy** (`pink-copy` `#FFE1E8`, dark `#2E1C25`): slip tint when voided, returned to vendor.
+- **Canary Copy** (`canary-copy` `#FFF5C2`, dark `#3D341A`): slip tint when held for the reviewer; the slip also carries a 6px top band in full-strength canary `#F2D246` (both themes).
+- **Pink Copy** (`pink-copy` `#FFE1E8`, dark `#40222F`): slip tint when voided, returned to vendor; 6px top band in full-strength pink `#EE97B0` (both themes). Ink, secondary ink and form-blue all hold 4.5:1 or better on both dark tints.
 - **Ink** (`ink` `#1B2232`, dark `#E6EAF2`), **ink-2** (`#3A4458`, dark `#BCC5D4`), **ink-3** (`#4F5B70`, dark `#9CA7BA`): text tiers; ink-3 is the lowest legible tier.
 - **Form Rule** (`form-rule` `#A9BBE3`, dark `#3B4A69`): 1px field and row rules, dotted check rules, tear line. **Form Faint** (`form-faint` `#E4EBF9`, dark `#253048`): hover and count-chip fill.
 - File tabs use five paper tints (plain, mint, amber, rose, sky) defined per theme; they label a slip's expected outcome, nothing else.
@@ -197,12 +197,12 @@ A cool blue-grey desk with white paper on it, one printed-form blue, and three r
 **Character:** A government form with a rubber stamp and a typewriter on the desk. Public Sans is the neutral printed layer, Courier Prime is the keyed-in layer, and the condensed caps of the stamp are the loudest voice on the page. Body numerals are tabular everywhere; typed values reset to normal figures.
 
 ### Hierarchy
-- **Stamp word** (900, 40px, line 1, +0.05em, uppercase): the large stamp. Small stamp 23px; mini-stamp 800 at 13px, +0.07em; stamp sub-line 700 at 12.5px, +0.16em.
+- **Stamp word** (900, 64px, line 1, +0.05em, uppercase): the slip's stamp (42px on phones). Specimen stamp 40px, small stamp 23px; mini-stamp 800 at 13px, +0.07em; stamp sub-line 700 at 16px on the slip (12.5px elsewhere), +0.16em.
 - **Serial** (800, 30px, line .85, +0.04em): the slip No. Paper numbers in the tray and stage numerals use 800 at 21px and 18px.
 - **Page title** (700, 24px, 1.25, -0.015em): landing and page headings; exception title 20px; primary reason 19px.
 - **Slip name** (700, 19px, 1.2): the slip header. Sheet title 16px; form heading 13.5px; sub-heading 12.5px, all form-blue.
 - **Body** (400 and 600, 14px, 1.5): form text; secondary 13px and 12.5px; explanations cap at 72ch, ledes at 68ch.
-- **Form label** (600, 11px, 1.25, +0.01em, sentence case, form-blue): the tiny label at a field's top-left; table column heads 11.5px.
+- **Form label** (600, 12px, 1.25, +0.01em, sentence case, form-blue): the tiny label at a field's top-left; slip column heads, file tabs and the inferred tag also 12px; table column heads 11.5px. Slip header meta 13.5px; check progress and stage times 13px to 13.5px.
 - **Typed** (400, 13.5px to 15px, 1.3): field values, check details, stage summaries, memo text (13px on 21px ruled lines), JSON (12.5px/1.6). Tally values 26px.
 
 ### Named Rules
@@ -225,7 +225,7 @@ Breakpoints:
 
 ## Elevation & Depth
 
-Paper lying on paper. Depth is a stack of soft contact shadows, never a glow and never a hard offset. Resting sheets use a three-layer shadow (1px contact, 2px, then a long 14px blur at -14px spread); in-tray slips use a lighter two-layer; hover and the current slip use a lift. Dark mode drops the mid layer and deepens the long layer. The in-tray drop zone is a recess: inset lip shadow plus stacked-sheet edge lines at its bottom. Stamps are the only translucent layer: multiply blend at 0.88 in light, normal blend at 0.94 in dark.
+Paper lying on paper. Depth is a stack of soft contact shadows, never a glow and never a hard offset. Resting sheets use a three-layer shadow (1px contact, 2px, then a long 14px blur at -14px spread); in-tray slips use a lighter two-layer; hover and the current slip use a lift. Dark mode drops the mid layer and deepens the long layer. The in-tray drop zone is a recess: inset lip shadow plus stacked-sheet edge lines at its bottom. Stamps are the only translucent layer: multiply blend at 0.88 in light, screen blend at 0.92 in dark, so typed text under the ink stays readable. A white slip shows the canary and pink copies beneath it as 3px and 6px offset edges.
 
 ### Shadow Vocabulary
 - **Sheet** (`0 1px 1px rgba(27,34,50,.07), 0 2px 4px -1px rgba(27,34,50,.08), 0 14px 30px -14px rgba(27,34,50,.3)`): slips, pages' sheets, document sheet.
@@ -252,13 +252,13 @@ Pills are not used; counts are 3px-radius chips.
 - **Disabled:** 42% opacity, not-allowed cursor. Busy: progress cursor.
 
 ### Processing Slip
-The signature sheet. White by default, canary when held, pink when voided (300ms tint transition). Header carries the slip name and organisation in form-blue, the file in typewriter, a serial No. in display numerals, and a boxed decision area (min-height 106px) holding the stamp or a retry control. Form fields are bordered cells with a 11px label above a typed value.
+The signature sheet. White by default, canary when held, pink when voided (300ms tint transition). Header carries the slip name and organisation in form-blue, the file in typewriter, a serial No. in display numerals (a sample's own number, else the run's place in the register, oldest first), and the decision. Until the decision, a dashed placeholder (min-height 106px) holds the stamp's place or a retry control; once inked, the stamp overprints the slip head (absolute, 12px from the right, 50px from the top, above the field row's top edge). Form fields are bordered cells with a 12px label above a typed value. Remarks is one such boxed field: the headline typed in the outcome ink, the explanation once, then each reason with its code in small mono.
 
 ### Stage Rows
-Seven numbered rows with a tick box, an outline icon, a name, a typed summary that types itself in, a status, and a ms count. Running rows get a 7% form-blue wash, a 2px box, and a blinking caret; passing rows pen a blue tick; warnings a violet exclamation; failures a vermilion cross; skipped a grey strike. Rows expand with a chevron to dotted-rule check lists, tables, and ink bars. Problems keep their full text; passing detail is truncated.
+Seven numbered rows with a tick box, an outline icon, a name, a typed summary that types itself in, a status, and a ms count. Running rows get a 7% form-blue wash, a 2px box, and a blinking caret; passing rows pen a blue tick; warnings a violet exclamation; failures a vermilion cross (on a rejected run, the stage that raised the blocking reason reads "Blocks payment" in vermilion); skipped a grey strike. Rows expand with a chevron to dotted-rule check lists, tables, and ink bars. Problems keep their full text; passing detail is truncated.
 
 ### Stamps
-Large (40px), small (23px), and mini (13px, 3px double border) variants in the three inks: APPROVED, ON HOLD, VOID. A decision made by a person reads "Approved" or "Rejected" with the sub-line "By reviewer" and the date. The ink filter is two SVG filters in the page: `ink` (fractal-noise displacement of 2.4 for rough edges, then a thresholded grain for speckled coverage) for the large and small stamps, and a lighter `ink-sm` for mini stamps and exception bars. Landing: scale 1.25 to 1 and fade in over 260ms with a (.2,.9,.25,1) curve, plus a 2px sheet jolt at 190ms delay for 220ms; opening a finished run shows the stamp already inked.
+Large (40px), small (23px), and mini (13px, 3px double border) variants in the three inks: APPROVED, ON HOLD, VOID. A decision made by a person reads "Approved" or "Rejected" with the sub-line "By reviewer" and the date. The ink filter is two SVG filters in the page: `ink` (fractal-noise displacement of 2.4 for rough edges, then a thresholded grain for speckled coverage) for the stamp frame and word, and a lighter `ink-sm` for the stamp's date line, mini stamps and exception bars. Landing: scale 1.25 to 1 and fade in over 260ms with a (.2,.9,.25,1) curve, an ink blot (a tone-coloured wash through the ink filter, opacity .3 to 0 and scale 1.06 to 1 over 260ms; none under reduced motion), plus a 2px sheet jolt at 190ms delay for 220ms; opening a finished run shows the stamp already inked.
 
 ### In-tray Slips and Drop Zone
 Each sample is a mini sheet: a display numeral, vendor in bold, a two-line scenario, a file tab in a paper tint for the expected outcome, and a ruled footer. The current slip shifts 7px right with a 1.5px form-blue outline; hover lifts by 1px. The drop zone is a recessed tray with a lip; dragging over it turns the lip form-blue and the border dashed, and the icon drops 3px.
@@ -270,7 +270,7 @@ Boxed cells with a form-blue label at top-left and a typed value; input boxes ar
 Remarks is a form heading with dotted-rule reasons, each with a pen mark. The routing slip is a bordered list of destinations; the active one is bold with a pen tick. Actions are tick boxes that strike through in pen blue when checked. The memo is a collapsible, lightly tinted box with typed text on 21px ruled lines.
 
 ### Registers, Tally and Tables
-Ruled tables: form-blue 1.5px header rule, 1px form-rule row rules, no zebra, right-aligned tabular numbers, whole-row link with a faint blue hover. The batch control sheet is six bordered tally cells with a 26px typed value; the exception list pairs a pen mark, label, ink bar (inked with the small filter) and count. Filter tabs are paper file tabs: selected tab becomes sheet-coloured and joins the sheet below.
+Ruled tables: form-blue 1.5px header rule, 1px form-rule row rules, no zebra, right-aligned tabular numbers, whole-row link with a faint blue hover. The batch control sheet is six bordered tally cells with a 26px typed value; the exception list pairs a pen mark, label, ink bar (inked with the small filter; its length is the share of invoices received) and an "n of N" count. Filter tabs are paper file tabs: selected tab becomes sheet-coloured and joins the sheet below.
 
 ### Navigation
 A desk-coloured top bar: brand mark (a stamped slip), name, organisation, three text links with a 2.5px form-blue underline on the current page and a count chip, then a three-way theme toggle (System, Light, Dark; the active option sits on a sheet chip) and a ghost Reset demo button. Focus: 2px form-blue outline, 2px offset.

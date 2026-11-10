@@ -75,7 +75,7 @@ function overview(s, runs) {
     <dt class="fl">${mark ? html`<span class="tone-text t-${mark[1]}">${pen(mark[0], 14)}</span>` : ''}${label}</dt>
     <dd class="tval">${value}</dd><dd class="tsub">${sub}</dd></div>`;
   const reasons = (s.topReasons || []).filter((x) => x.severity !== 'info' && x.count > 0);
-  const max = Math.max(1, ...reasons.map((x) => x.count));
+  const received = Math.max(1, s.total ?? runs.length); // bars are each exception's share of the batch
   return html`<section class="sheet batch" aria-labelledby="batch-title">
     <div class="sheet-head"><h2 class="sheet-title" id="batch-title">Batch control sheet</h2><span class="sheet-note">Halden Robotics · Accounts Payable</span></div>
     <dl class="tally">
@@ -92,8 +92,8 @@ function overview(s, runs) {
       <ul class="exc-rows">${reasons.map((x) => { const sv = SEVERITY[x.severity] || SEVERITY.hold; return html`<li>
         <span class="exc-mark tone-text t-${sv.tone}">${pen(sv.mark, 16, sv.label)}</span>
         <span class="exc-label" title="${x.code} · ${sv.label}">${reasonLabel(x)}</span>
-        <span class="exc-bar"><i class="t-${sv.tone}" style="width:${(x.count / max) * 100}%"></i></span>
-        <span class="exc-count">${x.count}</span></li>`; })}</ul>
+        <span class="exc-bar"><i class="t-${sv.tone}" style="width:${Math.min(1, x.count / received) * 100}%"></i></span>
+        <span class="exc-count">${x.count} of ${received}</span></li>`; })}</ul>
       <p class="exc-foot">Each invoice counts once per kind of exception.</p>
     </section>` : ''}
   </section>`;
