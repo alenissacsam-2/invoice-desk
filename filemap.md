@@ -18,5 +18,5 @@
 - `samples/` — demo invoice PDFs + manifest.json
 - `scripts/make_samples.py` — generates samples/
 - `scripts/eval.js` — runs all samples, checks expected decisions
-- `tests/` — node:test suites; `tests/fixtures/` ground-truth extractions
+- `tests/` — node:test suites (rules, logic-review property/invariant checks, pipeline, extract, server); `tests/fixtures/` ground-truth extractions
 - `docs/` — SPEC, PLAN, DEMO
