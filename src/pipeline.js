@@ -43,7 +43,14 @@ export function subscribe(id, fn) {
 export function summarize(run) {
   const { stages, extraction, result, review, ...row } = run;
   const main = result?.reasons?.find((r) => r.severity === 'block' || r.severity === 'hold');
-  return { ...row, route: result?.route ?? null, mainReason: main?.message ?? null, review: review?.action ?? null };
+  const vendorStage = stages?.find((s) => s.key === 'vendor');
+  const poStage = stages?.find((s) => s.key === 'po_match');
+  return {
+    ...row, route: result?.route ?? null, mainReason: main?.message ?? null, review: review?.action ?? null,
+    main_reason: main ? { code: main.code, severity: main.severity, message: main.message } : null,
+    vendor_name: vendorStage?.data?.vendor?.name ?? extraction?.vendor?.name ?? null,
+    po_inferred: Boolean(poStage?.data?.inferred),
+  };
 }
 
 // ---------- run ----------
