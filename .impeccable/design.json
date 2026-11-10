@@ -1,0 +1,158 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-11-10T00:00:00Z",
+  "title": "Design System: Invoice Desk",
+  "extensions": {
+    "colorMeta": {
+      "desk": { "role": "neutral", "displayName": "Desk Blotter", "canonical": "#D4DCE6", "dark": "#131922", "tonalRamp": ["#131922", "#2B3546", "#556278", "#7D899B", "#A9B7C8", "#C9D3DF", "#D4DCE6", "#EEF1F6"] },
+      "sheet": { "role": "neutral", "displayName": "White Copy", "canonical": "#FFFFFF", "dark": "#1C2331", "tonalRamp": ["#1C2331", "#3A4458", "#7D899B", "#A9B7C8", "#D4DCE6", "#E4EBF9", "#F4F6FA", "#FFFFFF"] },
+      "canary-copy": { "role": "neutral", "displayName": "Canary Copy", "canonical": "#FFF5C2", "dark": "#2B2713", "tonalRamp": ["#2B2713", "#5C5220", "#9A8A2E", "#D8C65A", "#F2E28A", "#FFF0A3", "#FFF5C2", "#FFFBE3"] },
+      "pink-copy": { "role": "neutral", "displayName": "Pink Copy", "canonical": "#FFE1E8", "dark": "#2E1C25", "tonalRamp": ["#2E1C25", "#5E2F42", "#9A4B66", "#D58AA3", "#F5B5C6", "#FFD2DD", "#FFE1E8", "#FFF1F4"] },
+      "ink": { "role": "neutral", "displayName": "Ink", "canonical": "#1B2232", "dark": "#E6EAF2", "tonalRamp": ["#1B2232", "#3A4458", "#4F5B70", "#7D899B", "#A9B7C8", "#C9D3DF", "#E6EAF2", "#F4F6FA"] },
+      "form-blue": { "role": "primary", "displayName": "NCR Form Blue", "canonical": "#2347B5", "dark": "#8FAAF7", "tonalRamp": ["#14286B", "#1F2F7C", "#2347B5", "#4C6BC9", "#7A93DA", "#A9BBE3", "#E4EBF9", "#F3F6FD"] },
+      "ledger-green": { "role": "secondary", "displayName": "Ledger Green", "canonical": "#1C7442", "dark": "#5FCB90", "tonalRamp": ["#0E3B21", "#14572F", "#1C7442", "#3A9060", "#5FCB90", "#9ADDB8", "#D3EEDD", "#EDF8F1"] },
+      "pad-violet": { "role": "secondary", "displayName": "Pad Violet", "canonical": "#5B3DA8", "dark": "#BEA8FF", "tonalRamp": ["#2D1E54", "#43307E", "#5B3DA8", "#7A60BC", "#9D88D3", "#BEA8FF", "#DDD2F7", "#F1ECFC"] },
+      "vermilion": { "role": "secondary", "displayName": "Vermilion", "canonical": "#BC3418", "dark": "#FF8668", "tonalRamp": ["#5E1A0C", "#8A2812", "#BC3418", "#D4573C", "#E87B60", "#FF8668", "#F9D6DE", "#FDEEF1"] }
+    },
+    "typographyMeta": {
+      "stamp-word": { "displayName": "Stamp Word", "purpose": "Condensed caps for stamps only; small 23px, mini 13px." },
+      "serial": { "displayName": "Serial", "purpose": "Slip No., paper numbers and stage numerals." },
+      "page-title": { "displayName": "Page Title", "purpose": "Landing and page headings." },
+      "slip-name": { "displayName": "Slip Name", "purpose": "Form-blue name in the slip header." },
+      "sheet-title": { "displayName": "Sheet Title", "purpose": "Titles of sheets on pages." },
+      "body": { "displayName": "Body", "purpose": "Form text, 14px, tabular numerals." },
+      "form-label": { "displayName": "Form Label", "purpose": "Tiny form-blue label at a field's top-left." },
+      "typed": { "displayName": "Typed", "purpose": "Every entered, extracted or drafted value." }
+    },
+    "shadows": [
+      { "name": "sheet", "value": "0 1px 1px rgba(27,34,50,.07), 0 2px 4px -1px rgba(27,34,50,.08), 0 14px 30px -14px rgba(27,34,50,.3)", "purpose": "Resting sheets: slip, page sheets, document." },
+      { "name": "slip", "value": "0 1px 1px rgba(27,34,50,.08), 0 3px 8px -3px rgba(27,34,50,.2)", "purpose": "In-tray paper and active toggle chip." },
+      { "name": "lift", "value": "0 2px 3px -1px rgba(27,34,50,.12), 0 10px 18px -8px rgba(27,34,50,.32)", "purpose": "Hovered and current paper." },
+      { "name": "sheet-dark", "value": "0 1px 1px rgba(0,0,0,.4), 0 14px 30px -14px rgba(0,0,0,.75)", "purpose": "Dark-theme resting sheet." }
+    ],
+    "motion": [
+      { "name": "stamp-land", "value": "260ms cubic-bezier(.2,.9,.25,1); scale 1.25 to 1, fade in", "purpose": "The decision stamp landing." },
+      { "name": "sheet-jolt", "value": "220ms ease-out, 190ms delay; translateY 2px at 40%", "purpose": "The slip reacts to the stamp." },
+      { "name": "pen-draw", "value": "220ms cubic-bezier(.3,.7,.3,1); second stroke +140ms", "purpose": "A pen mark drawn into a tick box." },
+      { "name": "paper-move", "value": "140ms ease-out", "purpose": "In-tray paper hover lift and current shift." },
+      { "name": "stage-gap", "value": "280ms minimum between visible stage transitions", "purpose": "Pacing so a streamed run is readable on video." },
+      { "name": "caret", "value": "1s steps(1) infinite blink", "purpose": "Running and typing indicator." },
+      { "name": "reduced-motion", "value": "all animation and transition disabled", "purpose": "prefers-reduced-motion: reduce." }
+    ],
+    "breakpoints": [
+      { "name": "wide-to-medium", "value": "1279px" },
+      { "name": "compact", "value": "960px" },
+      { "name": "mobile", "value": "799px" }
+    ]
+  },
+  "components": [
+    {
+      "name": "Default Button",
+      "kind": "button",
+      "refersTo": "button-default",
+      "description": "Squared sheet-white button with a form-rule border.",
+      "html": "<button class=\"ds-btn\">Open original</button>",
+      "css": ".ds-btn { height: 36px; padding: 0 14px; border-radius: 3px; border: 1px solid var(--form-rule, #A9BBE3); background: var(--sheet, #fff); color: var(--ink, #1B2232); font: 600 13.5px/1 'Public Sans', system-ui, sans-serif; cursor: pointer; transition: background-color .12s, border-color .12s, transform .08s; } .ds-btn:hover { border-color: var(--form, #2347B5); background: var(--form-faint, #E4EBF9); } .ds-btn:focus-visible { outline: 2px solid var(--form, #2347B5); outline-offset: 2px; } .ds-btn:active { transform: translateY(1px); }"
+    },
+    {
+      "name": "Primary Button",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "Form-blue fill; one per view.",
+      "html": "<button class=\"ds-btn-primary\">Drop an invoice</button>",
+      "css": ".ds-btn-primary { height: 36px; padding: 0 14px; border-radius: 3px; border: 1px solid var(--action, #2347B5); background: var(--action, #2347B5); color: var(--on-ink, #fff); font: 600 13.5px/1 'Public Sans', system-ui, sans-serif; cursor: pointer; transition: background-color .12s; } .ds-btn-primary:hover { background: color-mix(in srgb, var(--action, #2347B5) 84%, var(--ink, #1B2232)); } .ds-btn-primary:focus-visible { outline: 2px solid var(--form, #2347B5); outline-offset: 2px; }"
+    },
+    {
+      "name": "Approve Button",
+      "kind": "button",
+      "refersTo": "button-approve",
+      "description": "Sign-off in ledger green, a stamp ink.",
+      "html": "<button class=\"ds-btn-approve\">Approve</button>",
+      "css": ".ds-btn-approve { height: 36px; padding: 0 14px; border-radius: 3px; border: 1px solid var(--approve, #1C7442); background: var(--approve, #1C7442); color: var(--on-ink, #fff); font: 600 13.5px/1 'Public Sans', system-ui, sans-serif; cursor: pointer; } .ds-btn-approve:hover { background: color-mix(in srgb, var(--approve, #1C7442) 84%, var(--ink, #1B2232)); } .ds-btn-approve:focus-visible { outline: 2px solid var(--form, #2347B5); outline-offset: 2px; }"
+    },
+    {
+      "name": "Form Field",
+      "kind": "input",
+      "refersTo": "form-field",
+      "description": "Boxed cell: tiny form-blue label, typewriter value.",
+      "html": "<dl class=\"ds-fbox\"><dt class=\"ds-fl\">Invoice no.</dt><dd class=\"ds-typed\">INV-2291</dd></dl>",
+      "css": ".ds-fbox { margin: 0; padding: 5px 8px 7px; min-height: 54px; border: 1px solid var(--form-rule, #A9BBE3); background: var(--sheet, #fff); } .ds-fl { font: 600 11px/1.25 'Public Sans', system-ui, sans-serif; color: var(--form, #2347B5); letter-spacing: .01em; } .ds-typed { margin: 3px 0 0; font: 400 13.5px/1.3 'Courier Prime', 'Courier New', monospace; color: var(--ink, #1B2232); }"
+    },
+    {
+      "name": "Stamp",
+      "kind": "custom",
+      "refersTo": "stamp-approved",
+      "description": "Rubber stamp: double-ruled frame, condensed caps, rotated -6deg. Ink filter (#ink) is defined once in the page.",
+      "html": "<div class=\"ds-stamp\"><span class=\"ds-stamp-word\">Approved</span><span class=\"ds-stamp-sub\">By reviewer</span></div>",
+      "css": ".ds-stamp { display: inline-grid; justify-items: center; gap: 3px; padding: 9px 15px 8px; color: var(--approve, #1C7442); border: 3.5px solid currentColor; border-radius: 7px; outline: 1.5px solid currentColor; outline-offset: -8.5px; transform: rotate(-6deg); mix-blend-mode: multiply; opacity: .88; font-family: 'Big Shoulders Display', 'Arial Narrow', sans-serif; line-height: 1; text-transform: uppercase; white-space: nowrap; } .ds-stamp-word { font-weight: 900; font-size: 40px; letter-spacing: .05em; padding: 0 4px; } .ds-stamp-sub { font-weight: 700; font-size: 12.5px; letter-spacing: .16em; }"
+    },
+    {
+      "name": "In-tray Paper",
+      "kind": "card",
+      "refersTo": "paper-slip",
+      "description": "A sample slip in the tray; the current one shifts right with a form-blue outline.",
+      "html": "<button class=\"ds-paper\"><span class=\"ds-paper-no\">07</span><span><strong>Vendor Name</strong><br>Short scenario line.</span></button>",
+      "css": ".ds-paper { display: grid; grid-template-columns: 24px 1fr; gap: 8px; width: 272px; padding: 10px 11px 10px 9px; text-align: left; border: 0; border-radius: 2px; background: var(--sheet, #fff); color: var(--ink, #1B2232); box-shadow: 0 1px 1px rgba(27,34,50,.08), 0 3px 8px -3px rgba(27,34,50,.2); font: 13.5px/1.4 'Public Sans', system-ui, sans-serif; cursor: pointer; transition: transform .14s ease-out, box-shadow .14s ease-out; } .ds-paper-no { font: 800 21px/1 'Big Shoulders Display', 'Arial Narrow', sans-serif; color: var(--form, #2347B5); } .ds-paper:hover { transform: translateY(-1px); box-shadow: 0 2px 3px -1px rgba(27,34,50,.12), 0 10px 18px -8px rgba(27,34,50,.32); } .ds-paper:focus-visible { outline: 2px solid var(--form, #2347B5); outline-offset: 2px; }"
+    },
+    {
+      "name": "Stage Row",
+      "kind": "custom",
+      "refersTo": "slip",
+      "description": "Numbered row with a tick box and typed summary on a ruled line.",
+      "html": "<div class=\"ds-stage\"><span class=\"ds-no\">3</span><span class=\"ds-box\"></span><span><strong>Match purchase order</strong><br><span class=\"ds-sum\">PO-4410 matched, 3 of 3 lines</span></span></div>",
+      "css": ".ds-stage { display: grid; grid-template-columns: 22px 22px 1fr; column-gap: 10px; padding: 10px 0; border-bottom: 1px solid var(--form-rule, #A9BBE3); font: 600 14px/20px 'Public Sans', system-ui, sans-serif; color: var(--ink, #1B2232); } .ds-no { font: 800 18px/20px 'Big Shoulders Display', 'Arial Narrow', sans-serif; color: var(--form, #2347B5); text-align: center; } .ds-box { width: 20px; height: 20px; border: 1.5px solid var(--form, #2347B5); border-radius: 2px; background: var(--sheet, #fff); } .ds-sum { font: 400 13.5px/1.4 'Courier Prime', 'Courier New', monospace; }"
+    },
+    {
+      "name": "Tear Line",
+      "kind": "custom",
+      "refersTo": "slip",
+      "description": "Perforation separating sections of a slip, notched with the desk colour.",
+      "html": "<div class=\"ds-tear\"></div>",
+      "css": ".ds-tear { position: relative; height: 26px; width: 400px; background: radial-gradient(circle at 0 50%, var(--desk, #D4DCE6) 8px, transparent 8.5px) left / 50% 100% no-repeat, radial-gradient(circle at 100% 50%, var(--desk, #D4DCE6) 8px, transparent 8.5px) right / 50% 100% no-repeat; } .ds-tear::before { content: ''; position: absolute; left: 14px; right: 14px; top: 50%; border-top: 2px dashed var(--form-rule, #A9BBE3); }"
+    },
+    {
+      "name": "File Tab",
+      "kind": "nav",
+      "refersTo": "slip",
+      "description": "Register filter tab: the selected tab becomes sheet-coloured and joins the sheet.",
+      "html": "<button class=\"ds-ftab\" aria-pressed=\"true\">Held <span class=\"ds-n\">3</span></button>",
+      "css": ".ds-ftab { display: inline-flex; align-items: center; gap: 7px; height: 34px; padding: 0 14px; border: 1px solid transparent; border-bottom: 0; border-radius: 5px 5px 0 0; background: var(--sheet, #fff); color: var(--ink, #1B2232); font: 600 13px/1 'Public Sans', system-ui, sans-serif; cursor: pointer; } .ds-ftab:focus-visible { outline: 2px solid var(--form, #2347B5); outline-offset: -4px; } .ds-n { font-size: 11.5px; font-weight: 700; color: var(--form, #2347B5); background: var(--form-faint, #E4EBF9); padding: 2px 6px; border-radius: 3px; }"
+    }
+  ],
+  "narrative": {
+    "northStar": "The Carbon Copy",
+    "overview": "AP's own paper ritual made live. Every invoice becomes a multipart processing slip lying on a cool blue-grey desk blotter. The seven stages fill its numbered rows, and the decision lands as an inked rubber stamp. The colour of the carbon copy says whose desk the slip goes to: white is the AP file, canary is the reviewer, pink goes back to the vendor.\n\nDensity is operator-grade: 14px body, ruled tables, 1px hairlines in form-blue tints. Depth is paper lying on paper. Motion is paper moving and ink landing; nothing glows. The same desk exists at night: dark sheets, lifted form-blue, brightened inks, tinted dark copies.",
+    "keyCharacteristics": [
+      "Three paper colours (white, canary, pink) carry meaning and never change between themes.",
+      "Form-blue is the single drawn-line colour: labels, rules, headings, focus, links, and the primary button.",
+      "Three stamp inks are the only saturated fills: ledger green, pad violet, vermilion.",
+      "Three faces with three jobs: Public Sans for form text, Courier Prime for anything typed in, Big Shoulders Display for stamps and numerals.",
+      "One authored icon set plus hand-drawn pen marks; no glyph or emoji icons."
+    ],
+    "rules": [
+      { "name": "The Copy Colour Rule", "body": "Sheet tint is the destination, not decoration: white (AP file), canary (reviewer), pink (return to vendor). The three paper colours are fixed names, so the distribution swatches keep the same fill in both themes.", "section": "colors" },
+      { "name": "The Three Inks Rule", "body": "Green, violet and vermilion appear only as outcome: stamps, sign-off buttons, check marks, and status text. A fourth saturated hue does not enter the system.", "section": "colors" },
+      { "name": "The Pre-printed Rule", "body": "Anything the form already says (labels, rules, headings) is form-blue; anything a person or the machine puts in is ink or typewriter. Never swap them.", "section": "colors" },
+      { "name": "The Typed Value Rule", "body": "Every value a person or the extractor entered (vendor, invoice no., date, PO, amount, file name, memo, signature inputs) is in Courier Prime. Labels are never typewritten.", "section": "typography" },
+      { "name": "The Stamp Voice Rule", "body": "Condensed display caps belong to stamps, serials and numerals. They never set headings or body copy.", "section": "typography" },
+      { "name": "The Paper Only Rule", "body": "Shadows describe sheets resting on the desk. Nothing glows, no coloured shadows, no offset block shadows.", "section": "elevation" }
+    ],
+    "dos": [
+      "Do tint the slip by its destination (white, canary, pink) and show the same three swatches in the distribution footer.",
+      "Do set every entered or extracted value in Courier Prime and every pre-printed label in form-blue Public Sans.",
+      "Do keep stamps to the three inks, rotated -6deg, with the ink filter and a double-ruled frame.",
+      "Do use pen marks in tick boxes for status and one line-icon set for everything else.",
+      "Do express depth only with the three paper shadows above, and keep rest-state hairlines at 1px in form-rule.",
+      "Do keep text on ink, ink-2 or ink-3 tiers; ink-3 is the lowest tier for any readable text.",
+      "Do honour `prefers-reduced-motion` by dropping every animation and transition."
+    ],
+    "donts": [
+      "Don't use white cards on a pale ground with an indigo accent, hero KPI tiles, or pill badges.",
+      "Don't add glow, coloured shadows, gradients as decoration, or backdrop blur.",
+      "Don't set headings or body text in the stamp face; it is for stamps and numerals.",
+      "Don't introduce a fourth saturated colour or recolour the paper tints per theme.",
+      "Don't replace the stamp with a coloured pill or a badge; outcome is always a stamp or mini-stamp.",
+      "Don't use emoji or glyph characters as icons."
+    ]
+  }
+}
