@@ -40,27 +40,46 @@ function route() {
   if (switched && document.activeElement?.closest('.nav')) main.focus({ preventScroll: true });
 }
 
-async function refreshCount() {
+function setCount(n) {
   const el = document.getElementById('runs-count');
-  try {
-    const s = await api('/api/stats');
-    el.textContent = s?.total ? String(s.total) : '';
-  } catch { el.textContent = ''; }
+  el.textContent = n ? String(n) : '';
+  if (n) { el.setAttribute('role', 'img'); el.setAttribute('aria-label', `${n} ${n === 1 ? 'run' : 'runs'}`); }
+  else { el.removeAttribute('role'); el.removeAttribute('aria-label'); }
 }
 
-document.getElementById('reset').addEventListener('click', async (e) => {
-  if (!confirm('Reset the demo?\n\nThis clears every run and the ledger. Cached extractions are kept, so re-runs stay fast.')) return;
-  const btn = e.currentTarget;
-  btn.disabled = true;
+async function refreshCount() {
+  try { setCount((await api('/api/stats'))?.total); } catch { setCount(0); }
+}
+
+// Right-edge fade on the nav only while it overflows and isn't scrolled to the end.
+const nav = document.querySelector('.nav');
+const fade = () => nav.classList.toggle('more', nav.scrollWidth - nav.clientWidth - nav.scrollLeft > 2);
+nav.addEventListener('scroll', fade, { passive: true });
+window.addEventListener('resize', fade);
+
+// Reset demo: a styled <dialog>; Esc and Cancel close it, errors show inside it.
+const dlg = document.getElementById('reset-dlg');
+const dlgErr = document.getElementById('reset-err');
+const dlgGo = document.getElementById('reset-go');
+document.getElementById('reset').addEventListener('click', () => {
+  dlgErr.hidden = true;
+  dlg.showModal();
+});
+dlg.addEventListener('click', (e) => { if (e.target === dlg) dlg.close(); }); // backdrop click
+dlgGo.addEventListener('click', async () => {
+  dlgGo.disabled = true;
+  dlgErr.hidden = true;
   try {
     await api('/api/reset', { method: 'POST' });
+    dlg.close();
     active?.unmount?.();
     active = null;
     if (location.hash === '#/' || !location.hash) route(); else location.hash = '#/';
     refreshCount();
   } catch (err) {
-    alert(err.status === 429 ? err.message : `Reset failed: ${err.message}`);
-  } finally { btn.disabled = false; }
+    dlgErr.textContent = err.status === 429 ? err.message : `Reset failed: ${err.message}`;
+    dlgErr.hidden = false;
+  } finally { dlgGo.disabled = false; }
 });
 
 document.getElementById('skip').addEventListener('click', () => main.focus());
@@ -77,6 +96,7 @@ document.querySelector('.theme').addEventListener('click', (e) => {
   const t = b.dataset.themeSet;
   if (t === 'system') delete document.documentElement.dataset.theme; else document.documentElement.dataset.theme = t;
   try { if (t === 'system') localStorage.removeItem(THEME_KEY); else localStorage.setItem(THEME_KEY, t); } catch { /* private mode */ }
+  window.applyThemeColor?.(t === 'system' ? undefined : t);
   showTheme();
 });
 showTheme();
@@ -87,6 +107,7 @@ document.addEventListener('click', (e) => { const b = e.target.closest('[data-co
 // A file dropped outside the drop zone must not navigate away from the app.
 ['dragover', 'drop'].forEach((t) => window.addEventListener(t, (e) => { if (!e.target.closest?.('.drop')) e.preventDefault(); }));
 
+fade();
 window.addEventListener('hashchange', route);
 window.addEventListener('runs-changed', refreshCount);
 route();

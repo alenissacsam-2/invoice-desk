@@ -33,6 +33,7 @@ let samples = null;   // cached /api/samples
 let samplesError = null;
 let cur = null;       // the open run: { id, run, es, queue, busy, manual, applied, tick, docTab, decisionSig, fieldsSig, stampKey }
 let starting = false; // a sample/upload POST is in flight
+let launched = null;  // { id, filename } of the run this page just started, so its blank slip shows the file at once
 
 const $ = (sel) => root?.querySelector(sel);
 
@@ -74,15 +75,16 @@ export function mountProcess(main, id) {
   renderSamples();
 }
 
-export function unmountProcess() { closeRun(); root = null; }
+export function unmountProcess() { closeRun(); root = null; document.title = 'Invoice Desk'; }
 
 // ---------------------------------------------------------------- layout
 function build(main) {
   main.innerHTML = html`<div class="process">
+    <h1 class="sr-only">Invoice Desk: process an invoice</h1>
     <aside class="tray" aria-labelledby="tray-title">
       <h2 class="rail-title" id="tray-title">In tray</h2>
       <div class="drop" id="drop">
-        <input type="file" id="file-input" class="sr-only" tabindex="-1" accept=".pdf,.png,.jpg,.jpeg,application/pdf,image/png,image/jpeg">
+        <input type="file" id="file-input" class="sr-only" tabindex="-1" aria-label="Upload an invoice file" accept=".pdf,.png,.jpg,.jpeg,application/pdf,image/png,image/jpeg">
         <span class="drop-icon">${icon('upload', 22)}</span>
         <span class="drop-title" id="drop-title">Drop an invoice here</span>
         <span class="drop-sub">or <button type="button" class="link" id="browse">browse your files</button></span>
@@ -145,11 +147,11 @@ function renderSamples() {
       <span class="paper-no">${sampleNo(s.file)}</span>
       <span class="paper-body">
         <span class="paper-vendor">${s.vendor || s.title || s.file}</span>
-        <span class="paper-scn">${s.scenario || s.title || ''}</span>
-        ${tags.length ? html`<span class="paper-tabs">${tags.map((t) => html`<span class="ftab ${tabTone(t)}">${t}</span>`)}</span>` : ''}
+        <span class="paper-scn" title="${s.scenario || s.title || ''}">${s.scenario || s.title || ''}</span>
         <span class="paper-foot">
+          ${tags.length ? html`<span class="paper-tabs">${tags.map((t) => html`<span class="ftab ${tabTone(t)}">${t}</span>`)}</span>` : ''}
           ${p && !shown ? html`<span class="mark-running"><span class="caret" aria-hidden="true"></span>Processing</span>`
-            : p ? html`<span class="expects">Processed ${miniStamp({ status: 'done', decision: p.decision, final_decision: p.final_decision })}</span>`
+            : p ? miniStamp({ status: 'done', decision: p.decision, final_decision: p.final_decision })
             : d ? html`<span class="expects">Expects <strong class="tone-text t-${d.tone}">${EXPECT[s.expected]}</strong></span>` : ''}
         </span>
         ${s.runAfter ? html`<span class="paper-hint">Run after ${sampleNo(s.runAfter) || s.runAfter}</span>` : ''}
@@ -170,6 +172,7 @@ async function startSample(file) {
   try {
     const q = [`sample=${encodeURIComponent(file)}`, freshQ()].filter(Boolean).join('&');
     const { id } = await api(`/api/runs?${q}`, { method: 'POST' });
+    launched = { id, filename: file };
     location.hash = `#/run/${encodeURIComponent(id)}`;
   } catch (e) { dropMsg(e.status === 429 ? e.message : `Couldn't start this sample: ${e.message}`); } finally { starting = false; renderSamples(); }
 }
@@ -193,6 +196,7 @@ async function upload(f) {
       // Header values must be Latin-1, so the name is URI-encoded; the server decodes it.
       headers: { 'Content-Type': f.type || 'application/octet-stream', 'X-Filename': encodeURIComponent(f.name) },
     });
+    launched = { id, filename: f.name };
     location.hash = `#/run/${encodeURIComponent(id)}`;
   } catch (e) { dropMsg(e.status === 429 ? e.message : `Upload failed: ${e.message}`); } finally {
     starting = false;
@@ -204,13 +208,17 @@ async function upload(f) {
 
 // ---------------------------------------------------------------- empty state: a blank slip
 function renderEmpty() {
+  document.title = 'Invoice Desk';
   $('#doc-col').innerHTML = '';
   $('#run-col').innerHTML = html`<div class="landing">
     <div class="landing-main">
       <h1 class="page-title">How a run works</h1>
       <p class="lede">Every invoice gets a processing slip. Seven checks fill in its rows, then the decision is stamped on it. The model only reads the document; plain rules you can audit make every decision.</p>
+      <div class="landing-cta">
+        <p class="prompt">${icon('arrowLeft', 18)} Pick a sample from the in tray, or drop a file, to start.</p>
+        <button type="button" class="btn primary" data-start-no="01">Run the clean invoice (01)</button>
+      </div>
       ${specimen()}
-      <p class="prompt">${icon('arrowLeft', 18)} Pick a sample from the in tray, or drop a file, to start.</p>
     </div>
     <aside class="landing-side" aria-label="Recent runs and matching policy">
       <section class="sheet recent" aria-labelledby="recent-title">
@@ -281,6 +289,7 @@ function closeRun() {
   if (!cur) return;
   cur.es?.close();
   clearInterval(cur.tick);
+  clearInterval(cur.stTick);
   clearTimeout(cur.pollT);
   cur = null;
 }
@@ -293,8 +302,11 @@ function openRun(id) {
   root.classList.remove('show-doc');
   $('#run-col').scrollTop = 0;
   if (!matchMedia('(min-width: 800px)').matches) window.scrollTo(0, 0); // phones: the run sits above the tray
-  $('#run-col').innerHTML = html`<div class="run-loading muted"><span class="caret" aria-hidden="true"></span> Pulling slip <span class="typed">${id}</span>…</div>`;
-  $('#doc-col').innerHTML = '';
+  // The blank slip goes down at once (seven waiting rows); the snapshot fills it a moment later.
+  const mine = launched?.id === id ? launched : null;
+  $('#doc-col').dataset.doc = '';
+  c.run = normalize({ id, placeholder: true, status: mine ? 'running' : 'opening', created_at: new Date().toISOString(), filename: mine?.filename || '', stages: [] });
+  renderRun();
 
   const parse = (e) => { try { return JSON.parse(e.data); } catch { return null; } };
   const es = c.es = new EventSource(`/api/runs/${encodeURIComponent(id)}/events`);
@@ -312,7 +324,7 @@ async function poll(c) {
   let run;
   try { run = await api(`/api/runs/${encodeURIComponent(c.id)}`); } catch (e) { if (c === cur) renderMissing(e); return; }
   if (c !== cur) return;
-  if (!c.run) applySnapshot(run);
+  if (!c.run || c.run.placeholder) applySnapshot(run);
   else for (const s of run.stages || []) {
     const old = c.run.stages.find((x) => x.key === s.key);
     if (!old || old.status !== s.status || old.summary !== s.summary) enqueue(() => applyStage(s));
@@ -400,6 +412,7 @@ function renderRun() {
         </div>
       </header>
       <div id="slip-fields"></div>
+      <div class="decision-line" id="decision-line"></div>
       <section class="stages" aria-labelledby="tl-title">
         <div class="stages-head"><h2 class="form-h" id="tl-title">Checks</h2><span class="tl-progress" id="tl-progress" role="status"></span></div>
         <div class="st-cols" aria-hidden="true"><span>No.</span><span></span><span>Check</span><span>Time</span><span></span></div>
@@ -419,7 +432,7 @@ function renderRun() {
   renderProgress();
   renderDecisionSlot(false);
   renderDoc();
-  fillSerial(cur);
+  if (!r.placeholder) fillSerial(cur);
 }
 
 function renderHead() {
@@ -430,12 +443,12 @@ function renderHead() {
   const source = { sample: 'Sample', upload: 'Upload' }[r.source] || r.source;
   // A held run nobody has signed off can be read again (the server refuses with 409 otherwise).
   const canRetry = !running && !isError(r) && r.decision === 'REVIEW' && !r.superseded_by && finalOf(r)?.by !== 'reviewer';
-  el.innerHTML = html`<p class="meta-file" title="${r.filename}">${r.filename || 'Untitled document'}</p>
+  el.innerHTML = html`<p class="meta-file" title="${r.filename}">${r.filename || (r.placeholder ? ' ' : 'Untitled document')}</p>
     <p class="meta-bits"><span>Run <span class="typed">${r.id}</span></span><span>Started <span class="typed">${clock(r.created_at)}</span></span>${source ? html`<span>${source}</span>` : ''}</p>
     <p class="meta-bits">
       <span class="run-clock ${running ? 'live' : ''}">${running
         ? html`<span class="caret" aria-hidden="true"></span>Running <span class="typed" id="elapsed"></span>`
-        : isError(r) ? 'Stopped' : html`Finished in <span class="typed">${dur(c.liveMs ?? r.ms)}</span>`}</span>
+        : r.placeholder ? 'Opening the slip' : isError(r) ? 'Stopped' : html`Finished in <span class="typed">${dur(c.liveMs ?? r.ms)}</span>`}</span>
       <button type="button" class="link small doc-toggle" data-doc-toggle>${icon('doc', 16)}${docHidden ? 'Show document' : 'Hide document'}</button>
       ${canRetry ? html`<button type="button" class="link small" data-retry title="Starts a new run on the same file and reads it fresh">${icon('retry', 16)}Retry</button>` : ''}
     </p>
@@ -463,7 +476,7 @@ function timing(r) {
 }
 
 // ---- the boxed field row: what the clerk types in from the invoice
-const FIELD_BOXES = [['vendor', 'Vendor'], ['invoice', 'Invoice no.'], ['date', 'Invoice date'], ['po', 'PO'], ['total', 'Amount']];
+const FIELD_BOXES = [['vendor', 'Vendor'], ['invoice', 'Invoice no.'], ['date', 'Invoice date'], ['po', 'PO'], ['due', 'Due date'], ['total', 'Amount']];
 
 function slipValues(r) {
   const ex = r.stages.find((s) => s.key === 'extract');
@@ -480,6 +493,8 @@ function slipValues(r) {
     vendor: pick(f.vendor_name, x.vendor?.name, r.stages.find((s) => s.key === 'vendor')?.data?.vendor?.name, r.vendor_name),
     invoice: pick(f.invoice_number, x.invoice_number, r.invoice_number),
     date: pick(f.invoice_date, x.invoice_date),
+    due: pick(f.due_date, x.due_date),
+    terms: pick(f.payment_terms, x.payment_terms),
     po: printedPo ?? inferredPo,
     poInferred: !!inferredPo,
     total: pick(f.total, x.total, r.total),
@@ -491,8 +506,10 @@ function fieldsRow(v) {
   const val = (k) => {
     if (!v.read) return v.failed ? html`<span class="blank-note">Not read</span>` : html`<span class="blank"><span class="sr-only">Not filled in yet</span></span>`;
     const x = v[k];
-    if (x == null || x === '') return html`<span class="missing">Not on invoice</span>`;
+    const terms = k === 'due' && v.terms ? html`<span class="f-terms">${v.terms}</span>` : '';
+    if (x == null || x === '') return html`<span class="missing">Not on invoice</span>${terms}`;
     if (k === 'date') return day(String(x));
+    if (k === 'due') return html`${day(String(x))}${terms}`;
     if (k === 'total') return money(x, v.currency);
     if (k === 'po' && v.poInferred) return html`${x}<span class="inferred">inferred</span>`;
     return String(x);
@@ -500,9 +517,19 @@ function fieldsRow(v) {
   return html`<dl class="fields">${FIELD_BOXES.map(([k, label]) => html`<div class="fbox f-${k}"><dt class="fl">${label}</dt><dd class="typed">${val(k)}</dd></div>`)}</dl>`;
 }
 
+/** "KIS-24-0871 · On hold · Invoice Desk": the invoice number (else the file) and the stamp word. */
+function setTitle() {
+  const r = cur?.run;
+  if (!r) return;
+  const res = r.result?.decision ? r.result : r.stages.find((s) => s.key === 'decision')?.data;
+  const word = isError(r) && r.status !== 'running' ? 'Stopped' : res?.decision ? outcomeOf(r, res.decision)?.word : '';
+  document.title = [slipValues(r).invoice || r.filename, word, 'Invoice Desk'].filter(Boolean).join(' · ');
+}
+
 function renderFields() {
   const el = $('#slip-fields');
   if (!el || !cur?.run) return;
+  setTitle();
   const v = slipValues(cur.run);
   const sig = JSON.stringify(v);
   if (sig === cur.fieldsSig) return;
@@ -513,9 +540,15 @@ function renderFields() {
 function renderProgress() {
   const el = $('#tl-progress');
   if (!el) return;
-  const st = cur.run.stages;
+  const r = cur.run, st = r.stages;
   const done = st.filter((s) => !['pending', 'running'].includes(s.status)).length;
-  el.textContent = `${done} of ${st.length} done`;
+  // While running, name the row being filled in (or the next one, between rows).
+  const at = r.status === 'running' ? st.findIndex((s) => s.status === 'running') : -1;
+  const next = at >= 0 ? at : r.status === 'running' ? st.findIndex((s) => s.status === 'pending') : -1;
+  const total = st.reduce((a, s) => a + (s.ms ?? 0), 0);
+  el.textContent = next >= 0 ? `Checking ${next + 1} of ${st.length} · ${st[next].label || st[next].key}`
+    : done === st.length && !r.placeholder ? `${done} of ${st.length} done · ${dur(total)}`
+    : `${done} of ${st.length} done`;
 }
 
 // ---- stage rows
@@ -543,8 +576,20 @@ function stageRow(s, n, summary, drawn) {
     </span>
     <span class="st-meta">
       <span class="st-status ${s.status === 'passed' ? 'sr-only' : ''}">${STATUS_WORD[s.status] || s.status}</span>
-      ${showMs ? html`<span class="st-ms">${dur(s.ms)}</span>` : ''}
+      ${showMs ? html`<span class="st-ms">${dur(s.ms)}</span>`
+        : s.status === 'running' && s.t0 ? html`<span class="st-ms" data-t0="${s.t0}" aria-hidden="true">${liveSecs(s.t0)}</span>` : ''}
     </span>`;
+}
+
+/** A running row's time counts up: every 100 ms, or once a second under reduced motion. */
+const liveSecs = (t0) => { const s = Math.max(0, Date.now() - t0) / 1000; return `${reducedMotion() ? Math.floor(s) : s.toFixed(1)} s`; };
+function stageTick(c) {
+  if (c.stTick) return;
+  c.stTick = setInterval(() => {
+    const els = c === cur ? root?.querySelectorAll('.st-ms[data-t0]') : null;
+    if (!els?.length) { clearInterval(c.stTick); c.stTick = null; return; }
+    els.forEach((e) => { e.textContent = liveSecs(+e.dataset.t0); });
+  }, reducedMotion() ? 1000 : 100);
 }
 
 function renderStage(key, animate) {
@@ -565,13 +610,16 @@ function renderStage(key, animate) {
   const said = key === 'intake' ? dedupeParts(s.summary) : key === 'decision' && s.data?.decision ? spellMore(s.summary, primaryOf(s.data), s.data.reasons || []) : s.summary;
   const summary = s.summary ? prose(said) : (s.status === 'running' ? (key === 'extract' ? 'Gemini is reading the document' : 'Running the checks') : DESC[key] || '');
   const motion = changed && !reducedMotion();
+  // When the row started: the server's clock if it says, never later than now.
+  if (s.status === 'running' && c.run.status === 'running') (c.started ??= {})[key] ??= Math.min(Date.now(), Date.parse(s.startedAt) || Date.now());
   li.className = `stage s-${status}${open ? ' open' : ''}`;
   li.innerHTML = html`<button type="button" class="stage-head" ${expandable ? raw(`aria-expanded="${open}"`) : raw('disabled')} ${open ? raw(`aria-controls="sb-${esc(key)}"`) : ''}>
-      ${stageRow({ ...s, status }, c.run.stages.indexOf(s) + 1, summary, motion && !!MARK[status])}
+      ${stageRow({ ...s, status, t0: c.started?.[key] }, c.run.stages.indexOf(s) + 1, summary, motion && !!MARK[status])}
       <span class="chev">${expandable ? icon('chev', 16) : ''}</span>
     </button>
     ${open ? html`<div class="stage-body" id="sb-${key}">${stageBody(s)}</div>` : ''}`;
   if (motion && s.summary) typeIn(li.querySelector('.st-text'));
+  if (c.started?.[key] && s.status === 'running') stageTick(c);
   if (hadFocus) li.querySelector('.stage-head')?.focus();
 }
 
@@ -715,7 +763,6 @@ function vendorBody(d) {
 
 function poBody(d) {
   const out = [];
-  const cur$ = runCurrency();
   if (d.po_number) {
     out.push(html`<p class="po-head"><span class="typed strong">${d.po_number}</span>
       ${d.inferred ? html`<span class="ftab tab-sky">Inferred${d.score != null ? ` · score ${(+d.score).toFixed(2)}` : ''}</span>` : ''}
@@ -726,13 +773,18 @@ function poBody(d) {
       <span class="typed">${x.po_number}</span><span class="ink-bar"><i style="width:${Math.max(0, Math.min(1, +x.score || 0)) * 100}%"></i></span>
       <span class="cand-score">${x.score != null ? (+x.score).toFixed(2) : '—'}</span><span class="cand-tag">${x.po_number === d.po_number ? 'Chosen' : ''}</span></li>`)}</ul>`);
   }
-  if (Array.isArray(d.lines) && d.lines.length) {
-    out.push(html`<h3 class="form-h3">Line match</h3><div class="tbl-wrap"><table class="tbl lines">
+  out.push(lineMatch(d));
+  return out;
+}
+
+/** The PO stage's line-match table; Remarks reuses it as the evidence for a quantity or price hold. */
+function lineMatch(d, title = 'Line match') {
+  if (!Array.isArray(d?.lines) || !d.lines.length) return '';
+  const cur$ = runCurrency();
+  return html`<h3 class="form-h3">${title}</h3><div class="tbl-wrap"><table class="tbl lines">
       <thead><tr><th class="r">Billed</th><th class="r">Ordered</th><th class="r">Received</th><th class="r">Prev. invoiced</th><th class="r">Unit price</th><th class="r">PO price</th><th class="r">Var.</th></tr></thead>
       ${d.lines.map((l) => lineRow(l, d, cur$))}</table></div>
-      ${cur$ ? html`<p class="table-note">Prices in ${cur$}. ${d.matchType === '2-way' ? 'Services: 2-way match, no goods receipt needed.' : 'Goods: 3-way match against receipts.'}</p>` : ''}`);
-  }
-  return out;
+      ${cur$ ? html`<p class="table-note">Prices in ${cur$}. ${d.matchType === '2-way' ? 'Services: 2-way match, no goods receipt needed.' : 'Goods: 3-way match against receipts.'}</p>` : ''}`;
 }
 
 function lineRow(l, d, cur$) {
@@ -767,11 +819,21 @@ function dupBody(d) {
 
 // ---------------------------------------------------------------- outcome: stamp, remarks, routing, sign-off
 const CALLBACK_CODES = ['BANK_DETAILS_CHANGED', 'SUSPICIOUS_INSTRUCTIONS'];
+const MATCH_CODES = ['QTY_EXCEEDS_RECEIPT', 'PRICE_VARIANCE']; // src/rules.js po_match: the line table is their evidence
 const ERROR_TITLE = { unreadable_file: "Couldn't open this file", ai_unavailable: 'The AI reader is unavailable right now', internal: 'Something went wrong on our side' };
 const NAME_KEY = 'invoice-desk:reviewer';
 
-const inkStamp = (o, date, cls = '') => html`<div class="stamp t-${o.tone} ${cls}" role="img" aria-label="Stamped ${o.word}${o.sub ? ` ${o.sub.toLowerCase()}` : ''}${date ? `, ${date}` : ''}">
-  <span class="stamp-word">${o.word}</span>${o.sub || date ? html`<span class="stamp-sub">${[o.sub, date].filter(Boolean).join(' · ')}</span>` : ''}</div>`;
+function inkStamp(o, date, cls = '') {
+  const parts = [o.sub, date].filter(Boolean);
+  // A sub-line much wider than the stamp word goes on two lines (destination, then date): about 3.4 sub letters per word letter.
+  const stack = parts.length > 1 && parts.join(' · ').length > o.word.length * 3.4 + 4;
+  return html`<div class="stamp t-${o.tone} ${cls}" role="img" aria-label="Stamped ${o.word}${o.sub ? ` ${lcFirst(o.sub)}` : ''}${date ? `, ${date}` : ''}">
+  <span class="stamp-word">${o.word}</span>${parts.length ? html`<span class="stamp-sub${stack ? ' stack' : ''}">${stack ? parts.map((p) => html`<span>${p}</span>`) : parts.join(' · ')}</span>` : ''}</div>`;
+}
+
+// Where the slip goes, for the stamp's sub-line; a reviewer's own decision keeps "By reviewer".
+const STAMP_DEST = { APPROVE: 'To AP file', REJECT: 'Back to vendor' };
+const stampDest = (o, res) => o.sub || STAMP_DEST[o.decision] || (res?.route ? `To ${res.route}` : 'For review');
 
 const copiesFooter = (active) => html`<span class="fl">Copies</span>${COPIES.map(([k, name, desk]) => html`<span class="copy ${k === active ? 'on' : ''}"><i class="cs cs-${k}" aria-hidden="true"></i>${name} — ${desk}${k === active ? html`<span class="sr-only"> (this copy)</span>` : ''}</span>`)}`;
 
@@ -781,6 +843,7 @@ function renderDecisionSlot(animate = true) {
   const ds = r.stages.find((s) => s.key === 'decision');
   const res = r.result?.decision ? r.result : ds?.data?.decision ? ds.data : null;
   const kind = isError(r) && r.status !== 'running' ? 'error' : res ? 'card' : 'pending';
+  setTitle();
   const sig = JSON.stringify([kind, kind === 'card' ? [res, r.review, r.final] : kind === 'error' ? [r.error, r.result] : 0]);
   if (sig === c.decisionSig) return;
   c.decisionSig = sig;
@@ -790,7 +853,14 @@ function renderDecisionSlot(animate = true) {
   slip?.classList.add(`copy-${o?.copy || 'white'}`);
   const copies = $('#copies');
   if (copies) copies.innerHTML = copiesFooter(o?.copy || null);
-  renderStampBox(kind, o, r, animate);
+  renderStampBox(kind, o, r, animate, res);
+  // The decision, typed as one line under the field boxes, with a way down to the full remarks.
+  const line = $('#decision-line');
+  if (line) {
+    const text = o?.human ? reviewerText(o.human) : o ? headlineOf(res) : '';
+    line.innerHTML = text ? html`<p class="dl-text typed tone-text t-${o.tone}">${prose(text)}</p>
+      <button type="button" class="link small dl-go" data-to-remarks>Read the remarks ${icon('arrowRight', 16)}</button>` : '';
+  }
   const said = $('#decision-said');
   if (said && animate && kind !== 'pending') {
     said.textContent = kind === 'error' ? `Stopped. ${ERROR_TITLE[r.result?.errorKind] || "This run couldn't finish"}`
@@ -804,16 +874,16 @@ function renderDecisionSlot(animate = true) {
 }
 
 /** The decision box. A stamp that changes while you watch lands (once); opening a finished run shows it already inked. */
-function renderStampBox(kind, o, r, animate) {
+function renderStampBox(kind, o, r, animate, res) {
   const box = $('#stamp-box');
   if (!box) return;
   const key = o ? `${o.word}|${o.sub || ''}` : kind;
   const land = animate && o && cur.stampKey !== key && !reducedMotion();
   cur.stampKey = key;
   const at = o?.human?.at || r.final?.at || r.stages.find((s) => s.key === 'decision')?.endedAt || r.created_at;
-  // Inked, the stamp overprints the slip head; until then a dashed box holds its place.
+  // Inked, the stamp sits over the head's right side; until then a dashed box holds its place.
   box.classList.toggle('inked', !!o);
-  box.innerHTML = o ? inkStamp(o, localDay(at)) : html`<span class="fl">Decision</span>${kind === 'error'
+  box.innerHTML = o ? inkStamp({ ...o, sub: stampDest(o, res) }, localDay(at)) : html`<span class="fl">Decision</span>${kind === 'error'
     ? html`<span class="sb-retry"><span class="sb-empty">Not decided. The run stopped before a decision.</span>${r.superseded_by ? '' : html`<button type="button" class="btn sm" data-retry>${icon('retry', 16)}Retry</button>`}</span>`
     : html`<span class="sb-empty">Stamped here once every check has run</span>`}`;
   if (land) {
@@ -900,9 +970,20 @@ function headlineOf(res) {
 
 function decisionCard(r, res, o) {
   const fin = o?.human || null; // a person's decision on a held run
-  const reasons = Array.isArray(res.reasons) ? res.reasons : [];
+  // The rules raise one reason per PO line (two short lines are two QTY_EXCEEDS_RECEIPT); the remarks list each code once.
+  const reasons = [];
+  for (const x of Array.isArray(res.reasons) ? res.reasons : []) {
+    const same = x.code && reasons.find((y) => y.code === x.code);
+    if (!same) reasons.push({ ...x, msgs: x.message ? [x.message] : [] });
+    else {
+      if (x.message && !same.msgs.includes(x.message)) same.msgs.push(x.message);
+      if (x.severity === 'block') same.severity = 'block';
+    }
+  }
   const holds = reasons.filter((x) => x.severity !== 'info').sort((a, b) => (b.severity === 'block') - (a.severity === 'block'));
   const notes = reasons.filter((x) => x.severity === 'info');
+  const po = r.stages.find((s) => s.key === 'po_match')?.data;
+  const evidence = reasons.some((x) => MATCH_CODES.includes(x.code) && x.severity !== 'info') ? lineMatch(po, 'Match') : '';
   const actions = Array.isArray(res.nextActions) ? res.nextActions : [];
   const primary = primaryOf(res);
   // Once a person decides, the system's pending prose ("nothing will be paid until…") no longer holds.
@@ -911,20 +992,21 @@ function decisionCard(r, res, o) {
   const reasonRow = (x) => {
     const sv = SEVERITY[x.severity] || SEVERITY.info;
     // A message the explanation already says is not repeated under its reason.
-    const msg = x.message && !explained.includes(x.message) ? x.message : '';
+    const msgs = x.msgs.filter((m) => !explained.includes(m));
     return html`<li class="reason"><span class="reason-mark tone-text t-${sv.tone}">${pen(sv.mark, 18, sv.label)}</span>
       <span class="reason-body"><span class="reason-label">${reasonLabel(x)}</span>${x.code ? html`<span class="reason-code">${x.code}</span>` : ''}
-      ${msg ? html`<span class="reason-msg">${prose(msg)}</span>` : ''}</span></li>`;
+      ${msgs.map((m) => html`<span class="reason-msg">${prose(m)}</span>`)}</span></li>`;
   };
   const pay = fin ? (fin.decision === 'APPROVE' ? fin.payment : null) : res.payment;
   const ptone = primary ? (SEVERITY[primary.severity] || SEVERITY.hold).tone : 'neutral';
   const headline = headlineOf(res);
-  return html`<section class="remarks fbox" aria-labelledby="rm-title">
+  return html`<section class="remarks fbox" id="remarks" tabindex="-1" aria-labelledby="rm-title">
       <h2 class="fl" id="rm-title">Remarks</h2>
       ${fin ? html`<p class="rm-value muted">System held it${primary ? `: ${reasonLabel(primary)}` : ''}</p>`
         : headline ? html`<p class="rm-value typed${res.decision !== 'APPROVE' ? ` tone-text t-${ptone}` : ''}">${prose(headline)}</p>` : ''}
       ${explanation ? html`<p class="explanation">${prose(explanation)}</p>` : ''}
       ${holds.length ? html`<ul class="reasons">${holds.map(reasonRow)}</ul>` : ''}
+      ${evidence ? html`<div class="rm-match">${evidence}</div>` : ''}
       ${notes.length ? html`<h3 class="form-h3">Notes</h3><ul class="reasons notes">${notes.map(reasonRow)}</ul>` : ''}
     </section>
     <div class="outcome-grid">
@@ -999,16 +1081,16 @@ const supersededBlock = (r) => html`<section class="sign" aria-labelledby="sign-
   <p class="sign-lede">This hold was retried as a new run, so it is signed off there. <a class="link" href="#/run/${encodeURIComponent(r.superseded_by)}">Open the newer slip ${icon('arrowRight', 16)}</a></p></section>`;
 
 /** In place of the system's next actions once a reviewer has decided. */
-function reviewerOutcome(fin) {
+function reviewerText(fin) {
   const who = fin.reviewer || fin.review?.reviewer || 'a reviewer';
   const on = fin.at ? ` on ${localDay(fin.at)}` : '';
   const sched = fin.payment?.scheduledFor;
-  const text = fin.decision === 'APPROVE'
+  return fin.decision === 'APPROVE'
     ? `Approved by ${who}${on} — ${sched ? `payment scheduled ${day(sched)}` : 'payment scheduled'}`
     : `Rejected by ${who}${on} — vendor to be told`;
-  return html`<section class="next" aria-labelledby="na-title"><h2 class="form-h" id="na-title">Outcome</h2>
-    <p class="rm-value typed tone-text t-${fin.decision === 'APPROVE' ? 'approve' : 'reject'}">${text}</p></section>`;
 }
+const reviewerOutcome = (fin) => html`<section class="next" aria-labelledby="na-title"><h2 class="form-h" id="na-title">Outcome</h2>
+    <p class="rm-value typed tone-text t-${fin.decision === 'APPROVE' ? 'approve' : 'reject'}">${reviewerText(fin)}</p></section>`;
 
 function signedBlock(fin) {
   const rv = fin.review || {};
@@ -1088,13 +1170,19 @@ const CLIP = raw('<svg class="clip" width="22" height="58" viewBox="0 0 22 58" a
 function renderDoc() {
   const c = cur, r = c.run, id = encodeURIComponent(c.id);
   const isImg = /^image\//.test(r.mime || '') || /\.(png|jpe?g)$/i.test(r.filename || '');
+  // The blank slip of a run opened by link doesn't know its file type yet; the snapshot fills the sheet.
+  const kind = r.placeholder && !r.filename ? 'blank' : isImg ? 'img' : 'pdf';
+  const col = $('#doc-col');
+  // The snapshot re-renders the slip; keep an original that is already loading rather than fetch it twice.
+  if (col.dataset.doc === `${c.id}|${kind}` && $('#pane-doc')) return renderJson();
+  col.dataset.doc = `${c.id}|${kind}`;
   const docTab = (k, label) => tab('doctab', k, label, c.docTab === k, `pane-${k}`, `tab-${k}`);
-  $('#doc-col').innerHTML = html`${switcher('doc')}
+  col.innerHTML = html`${switcher('doc')}
     <div class="doc-bar"><div role="tablist" aria-label="Document view" class="tabs">${docTab('doc', 'Document')}${docTab('json', 'Extracted JSON')}</div>
       <a class="link small doc-open" href="/api/runs/${id}/file" target="_blank" rel="noopener">Open original ${icon('external', 16)}</a></div>
     <div class="doc-sheet">${CLIP}
       <div class="doc-pane" id="pane-doc" role="tabpanel" aria-labelledby="tab-doc" ${c.docTab === 'doc' ? '' : raw('hidden')}>
-        ${isImg ? html`<img src="/api/runs/${id}/file" alt="Invoice ${r.filename || ''}">` : html`<iframe src="/api/runs/${id}/file#toolbar=0&navpanes=0&view=FitH" title="Invoice ${r.filename || ''}"></iframe>`}
+        ${kind === 'blank' ? '' : isImg ? html`<img src="/api/runs/${id}/file" alt="Invoice ${r.filename || ''}">` : html`<iframe src="/api/runs/${id}/file#toolbar=0&navpanes=0&view=FitH" title="Invoice ${r.filename || ''}"></iframe>`}
       </div>
       <div class="json-pane" id="pane-json" role="tabpanel" aria-labelledby="tab-json" ${c.docTab === 'json' ? '' : raw('hidden')}></div>
     </div>`;
@@ -1132,6 +1220,17 @@ function onRunClick(e) {
   if (rv) return rv.disabled ? undefined : submitReview(rv.dataset.review, rv);
   const rt = t.closest('[data-retry]');
   if (rt) return retryRun(rt);
+  if (t.closest('[data-to-remarks]')) {
+    const rm = $('#remarks');
+    rm?.scrollIntoView({ block: 'start', behavior: reducedMotion() ? 'auto' : 'smooth' });
+    return rm?.focus({ preventScroll: true });
+  }
+  const go = t.closest('[data-start-no]');
+  if (go) {
+    // The same start as clicking that sample's card in the tray.
+    const s = samples?.find((x) => sampleNo(x.file) === go.dataset.startNo);
+    return s ? startSample(s.file) : dropMsg("Couldn't find that sample in the in tray.");
+  }
   if (t.closest('[data-doc-toggle]')) return setDocHidden(!docHidden);
   const dt = t.closest('[data-doctab]');
   if (dt && cur) {

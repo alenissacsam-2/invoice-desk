@@ -200,7 +200,7 @@ A cool blue-grey desk with white paper on it, one printed-form blue, and three r
 - **Stamp word** (900, 64px, line 1, +0.05em, uppercase): the slip's stamp (42px on phones). Specimen stamp 40px, small stamp 23px; mini-stamp 800 at 13px, +0.07em; stamp sub-line 700 at 16px on the slip (12.5px elsewhere), +0.16em.
 - **Serial** (800, 30px, line .85, +0.04em): the slip No. Paper numbers in the tray and stage numerals use 800 at 21px and 18px.
 - **Page title** (700, 24px, 1.25, -0.015em): landing and page headings; exception title 20px; primary reason 19px.
-- **Slip name** (700, 19px, 1.2): the slip header. Sheet title 16px; form heading 13.5px; sub-heading 12.5px, all form-blue.
+- **Slip name** (700, 19px, 1.2): the slip header. Sheet title 16px; form heading 13.5px; sub-heading 12.5px, all form-blue. The tray's rail title (700, 15px, ink) is deliberately different: it sits on the desk, off any sheet, so it is ink rather than form-blue.
 - **Body** (400 and 600, 14px, 1.5): form text; secondary 13px and 12.5px; explanations cap at 72ch, ledes at 68ch.
 - **Form label** (600, 12px, 1.25, +0.01em, sentence case, form-blue): the tiny label at a field's top-left; slip column heads, file tabs and the inferred tag also 12px; table column heads 11.5px. Slip header meta 13.5px; check progress and stage times 13px to 13.5px.
 - **Typed** (400, 13.5px to 15px, 1.3): field values, check details, stage summaries, memo text (13px on 21px ruled lines), JSON (12.5px/1.6). Tally values 26px.
