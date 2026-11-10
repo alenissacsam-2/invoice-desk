@@ -43,17 +43,39 @@ export function fmtDate(s) {
 
 /**
  * Uppercase, keep alphanumerics, strip leading zeros of each digit run.
- * Zeros are stripped per separator-delimited segment first, so INV-2026-0042 == INV-2026-42
- * (zero padding of the sequence part) while INV-1045 != INV-10450.
+ * Zeros are stripped per separator-delimited segment, so INV-2026-0042 == INV-2026-42 (zero padding)
+ * while INV-1045 != INV-10450. Two digit runs split by a separator keep a "-" between them,
+ * so INV-1045-0 != INV-10450.
  */
 export function normalizeInvoiceNumber(s) {
   if (s === null || s === undefined) return null;
-  const out = String(s).toUpperCase().split(/[^A-Z0-9]+/)
-    .map((seg) => seg.replace(/\d+/g, (d) => d.replace(/^0+(?=\d)/, ''))).join('');
+  const segs = String(s).toUpperCase().split(/[^A-Z0-9]+/).filter(Boolean)
+    .map((seg) => seg.replace(/\d+/g, (d) => d.replace(/^0+(?=\d)/, '')));
+  const out = segs.reduce((acc, seg) => acc + (/\d$/.test(acc) && /^\d/.test(seg) ? '-' : '') + seg, '');
   return out || null;
 }
 
 export const normalizePO = (s) => alnum(s) || null;
+
+// Digit groups without zero padding: labels and prefixes ("PO# ", "Your Ref:", "PO-") drop out by themselves.
+const poDigitKey = (s) => (String(s ?? '').match(/\d+/g) ?? []).map((d) => d.replace(/^0+(?=\d)/, '')).join('-');
+/** Find the PO an invoice quotes: exact (alphanumerics), else the one PO whose digit groups match ("2026-0412", "PO-2026-412", "PO# PO-2026-0412"). */
+export function resolvePO(quoted, pos = []) {
+  const exact = pos.find((p) => normalizePO(p.po_number) === normalizePO(quoted));
+  if (exact) return exact;
+  const key = poDigitKey(quoted);
+  if (!key) return null;
+  const hits = pos.filter((p) => poDigitKey(p.po_number) === key);
+  return hits.length === 1 ? hits[0] : null;
+}
+
+// Labels printed in front of a tax ID ("EIN: ", "GSTIN ", "Tax ID No.").
+const TAXID_LABEL_RE = /^\s*(?:(?:f?ein|tin|gstin|gst(?:\s*(?:no|reg(?:istration)?))?|vat(?:\s*reg(?:istration)?)?|tax\s*(?:id|identification)|federal\s+tax\s+id)\b\s*(?:no\.?|number|#)?\s*[:#.-]?\s*)+/i;
+/** Tax ID without its printed label, uppercase, no spaces. */
+export const cleanTaxId = (s) => (s === null || s === undefined || s === '' ? null : String(s).replace(TAXID_LABEL_RE, '').toUpperCase().replace(/\s+/g, '') || null);
+// Labels printed in front of a routing/bank code ("ABA 121000248", "Routing No.: ", "IFSC: ").
+const ROUTING_LABEL_RE = /^\s*(?:(?:aba|rtn|ach|routing|ifsc|sort|bsb|transit|swift|bic)\b\s*(?:code|no\.?|number|#)?\s*[:#.-]?\s*)+/i;
+const cleanRouting = (s) => alnum(String(s ?? '').replace(ROUTING_LABEL_RE, ''));
 
 const MONTHS = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec'];
 // Light stemming so 'monthly'~'month', 'services'~'service', 'October'~'Oct' (vision models paraphrase).
@@ -161,7 +183,7 @@ export function validate(ex, { today } = {}) {
   for (const [k, v] of required) s.check(`Has ${k}`, missing.includes(k) ? 'fail' : 'pass', missing.includes(k) ? 'Not on the document' : String(v));
   if (missing.length) {
     const why = missing.includes('invoice number') ? ' and to check it is not a duplicate' : '';
-    s.reason('MISSING_FIELD', 'hold', `The invoice shows no ${humanList(missing, 'or')}; we need ${missing.length > 1 ? 'them' : 'it'} to book it${why}.`);
+    s.reason('MISSING_FIELD', 'hold', `The ${credit ? 'credit note' : 'invoice'} shows no ${humanList(missing, 'or')}; we need ${missing.length > 1 ? 'them' : 'it'} to book it${why}.`);
   }
 
   // Arithmetic
@@ -189,11 +211,13 @@ export function validate(ex, { today } = {}) {
     if (Math.abs(st - num(ax.tax_total)) > slack + EPS)
       mismatch('Tax lines add up to tax total', `The tax lines add up to ${m(st)}, but the tax total says ${m(num(ax.tax_total))}.`);
   }
+  let totalOk = false;
   if (t.total !== null) {
     const expected = ax.tax_inclusive ? (subtotal !== null && Math.abs(subtotal - t.sumLines) > slack ? subtotal + t.tax : t.sumLines) + t.shipping
       : (subtotal ?? t.sumLines) + t.tax + t.shipping;
     if (lines.length || subtotal !== null) {
-      if (Math.abs(expected - t.total) <= slack + EPS) s.check('Total adds up', 'pass', `${m(t.total)}`);
+      totalOk = Math.abs(expected - t.total) <= slack + EPS;
+      if (totalOk) s.check('Total adds up', 'pass', `${m(t.total)}`);
       else mismatch('Total adds up', ax.tax_inclusive
         ? `The prices include tax and add up to ${m(expected)}, but the invoice total says ${m(t.total)}.`
         : `Subtotal ${m(subtotal ?? t.sumLines)} + tax ${m(t.tax)}${t.shipping ? ` + shipping ${m(t.shipping)}` : ''} = ${m(expected)}, but the invoice total says ${m(t.total)}.`);
@@ -215,6 +239,9 @@ export function validate(ex, { today } = {}) {
       const exp = (base * rate) / 100, expShip = ((base + t.shipping) * rate) / 100; // shipping is taxable in some places
       if (Math.abs(exp - amt) <= slack + EPS || (t.shipping && Math.abs(expShip - amt) <= slack + EPS))
         s.check(`${label} rate`, 'pass', `${rate}% of ${m(base)} = ${m(r2(exp))}`);
+      // Taxed on part of the base (non-taxable lines, or one tax line per HSN code at the same rate): fine when the total reconciles.
+      else if (totalOk && rate > 0 && amt >= 0 && (amt * 100) / rate <= base + t.shipping + slack + EPS)
+        s.check(`${label} rate`, 'warn', `${rate}% of ${m((amt * 100) / rate)}, part of the ${m(base)} subtotal (some lines not taxed at this rate); the total adds up`);
       else mismatch(`${label} rate`, `${label} at ${rate}% of ${m(base)} should be ${m(exp)}, but the invoice shows ${m(amt)}.`);
     }
   }
@@ -240,6 +267,8 @@ export function validate(ex, { today } = {}) {
     if (ex.due_date && parseDate(ex.due_date) !== null && parseDate(d) !== null && daysBetween(d, ex.due_date) < 0)
       s.check('Due date after invoice date', 'warn', `Due ${ex.due_date} is before the invoice date ${d}`);
   }
+  if (ex.due_date && parseDate(ex.due_date) === null)
+    s.check('Due date is valid', 'warn', `"${ex.due_date}" is not a real calendar date; we use the invoice date plus the vendor's terms`);
 
   // Low confidence on key fields (only fields that have a value; an absent field is already MISSING_FIELD)
   const conf = ex.confidence ?? {};
@@ -254,13 +283,15 @@ export function validate(ex, { today } = {}) {
   if (ex.source_quality?.legibility === 'low') s.check('Legibility', 'warn', 'Document is hard to read');
   else if (ex.source_quality?.kind === 'scanned_image') s.check('Source', 'info', `Scanned image, legibility ${ex.source_quality.legibility}`);
 
-  // Tax ID format for the vendor's country (inferred from the invoice currency, since the vendor is not matched yet)
+  // Tax ID format for the vendor's country, inferred from the invoice currency (the vendor is not matched yet);
+  // with no currency read, from the shape of the ID itself, so a GSTIN is never checked as an EIN.
   const rawTid = ex.vendor?.tax_id;
-  const country = cur === 'USD' ? 'US' : cur === 'INR' ? 'IN' : null;
-  if (!rawTid) s.check('Tax ID format', 'info', 'No tax ID on the invoice');
-  else if (!country) s.check('Tax ID format', 'info', `${rawTid} (format not checked for ${cur})`);
+  const tid = cleanTaxId(rawTid);
+  const country = ex.currency === 'USD' ? 'US' : ex.currency === 'INR' ? 'IN'
+    : !ex.currency && tid ? (GSTIN_RE.test(tid) ? 'IN' : EIN_RE.test(tid) ? 'US' : null) : null;
+  if (!tid) s.check('Tax ID format', 'info', 'No tax ID on the invoice');
+  else if (!country) s.check('Tax ID format', 'info', `${rawTid} (format not checked${ex.currency ? ` for ${ex.currency}` : ': currency not read'})`);
   else {
-    const tid = String(rawTid).trim().toUpperCase().replace(/\s+/g, '');
     const ok = country === 'US' ? EIN_RE.test(tid) : GSTIN_RE.test(tid);
     const kind = country === 'US' ? 'US EIN (NN-NNNNNNN)' : 'Indian GSTIN (15 characters, like 29AABCS1234F1Z5)';
     s.check('Tax ID format', ok ? 'pass' : 'fail', `${rawTid}${ok ? '' : ` is not a valid ${kind}`}`);
@@ -285,6 +316,8 @@ function nameScore(name, v) {
   return best;
 }
 const domainOf = (email) => String(email ?? '').toLowerCase().split('@')[1]?.replace(/[^a-z0-9.-]/g, '') || null;
+const FREEMAIL = new Set(['gmail.com', 'googlemail.com', 'yahoo.com', 'yahoo.co.in', 'outlook.com', 'hotmail.com', 'live.com', 'msn.com',
+  'icloud.com', 'me.com', 'aol.com', 'proton.me', 'protonmail.com', 'gmx.com', 'gmx.de', 'zoho.com', 'rediffmail.com', 'mail.com']);
 const SLD = new Set(['co', 'com', 'net', 'org', 'ac', 'gov', 'edu']);
 /** Registrable label without TLD or subdomains: mail.kestrel-supply.co.uk → kestrel-supply. */
 function coreLabel(d) {
@@ -309,37 +342,70 @@ export function isLookalikeDomain(a, b) {
   const x = coreLabel(a), y = coreLabel(b);
   if (!x || !y || a === b || a.endsWith('.' + b) || b.endsWith('.' + a)) return false; // a subdomain of the real domain is the real domain
   if (x === y || skeleton(x) === skeleton(y)) return true; // TLD swap, hyphen, 0↔o, 1↔l
+  // The real domain used as a prefix or part of another one: acmeofficesupply.com.payments-portal.net, acmeofficesupply-billing.com
+  if (a.startsWith(b + '.') || a.includes('.' + b + '.') || b.startsWith(a + '.')) return true;
+  if (Math.min(x.length, y.length) >= 5 && (x.includes(y) || y.includes(x))) return true;
   return Math.min(x.length, y.length) >= 5 && editDistance(x, y) <= 2;
 }
 
 // Text on the document that tries to steer how it is processed (prompt injection, social engineering).
-// Each entry is one pattern; any hit in a notice, line description or payment terms → SUSPICIOUS_INSTRUCTIONS.
-// Urgency alone is normal dunning, so it only counts together with payment pressure (URGENCY + PAYMENT in one text).
+// - patterns: imperatives aimed at whoever processes the invoice (approve/pay/skip/ignore + verification/checks/
+//   instructions), "pre-approved" claims, AI/automation addressed directly, and a few Spanish/German equivalents.
+//   Scanned in notices and payment terms only: line descriptions ("Edge AI processor", "Same-day transfer") are goods.
+// - tells: things no genuine invoice prints anywhere — our extraction schema's field names and chat-role prefixes.
+//   Scanned in every extracted string (vendor name/address, bill-to, bank name, item codes, lines…).
+// - urgency + payment in one text: urgency alone is normal dunning ("Payment due immediately upon receipt" is fine),
+//   so only deadline pressure ("within 24 hours", "final warning", "urgent") together with a payment word counts.
+// All text is normalised first (NFKC, zero-width characters removed, "a p p r o v e" collapsed).
 const STEERING = {
   patterns: [
-    /\bpre-?approved\b/i,
-    /\b(?:auto-?approve|approve (?:this|it|immediately|now|without|today|at once|right away))/i,
-    /\b(?:do not|don't|dont|no need to|without|skip(?:ping)?|bypass(?:ing)?|avoid)\s+(?:any\s+|the\s+|further\s+)?(?:verif|check|call|confirm|review|approv|validat|contact)\w*/i,
-    /\bignore\s+(?:all\s+|any\s+|the\s+)?(?:previous|prior|above|earlier|other|usual|standard)?\s*(?:instructions?|rules?|checks?|controls?|policies|policy)/i,
-    // An AI addressed with an imperative ("AI reviewers must approve…"); case-sensitive AI so "ai" inside words and plain "AI module" lines don't count.
-    /\b(?:AI|LLM|GPT|[Ll]anguage [Mm]odel)s?\b[^.]{0,60}\b(?:[Aa]pprove|[Pp]ay|[Pp]rocess|[Ii]gnore|[Ss]kip|must|should|[Mm]ark|[Aa]ccept|[Rr]elease)/,
+    /\bpre-?(?:approved|authori[sz]ed|verified|cleared)\b/i,
+    /\balready\s+(?:been\s+)?(?:approved|authori[sz]ed|verified|cleared)\b/i,
+    /\b(?:auto-?approve|approve\s+(?:this|it|immediately|now|without|today|at\s+once|right\s+away))\b/i,
+    /\b(?:do\s+not|don'?t|no\s+need\s+to|skip(?:ping)?|bypass(?:ing)?)\s+(?:any\s+|the\s+|further\s+|this\s+|our\s+|your\s+)?(?:verif|check|call|confirm|review|validat|approv|contact)\w*/i,
+    /\bwithout\s+(?:any\s+|further\s+|the\s+)?(?:verification|verifying|checks?|checking|call-?\s?backs?|calling|review|validation)\b/i,
+    /\bno\s+(?:call-?\s?backs?|verification|confirmation|checks?)\s+(?:is\s+|are\s+)?(?:required|needed|necessary)\b/i,
+    /\b(?:ignore|disregard|forget|override)\s+(?:all\s+|any\s+|the\s+|your\s+)?(?:previous|prior|above|earlier|other|usual|standard|existing|normal)?\s*(?:instructions?|rules?|checks?|controls?|polic(?:y|ies)|prompts?|verification)\b/i,
+    /\byour\s+new\s+instructions\b|\bnew\s+instructions\s+(?:are|follow)\b/i,
+    // An AI addressed with an imperative ("AI reviewers must approve…"); case-sensitive AI so "ai" inside words doesn't count.
+    /\b(?:AI|LLM|GPT|[Ll]anguage [Mm]odel)s?\b[^.]{0,60}\b(?:[Aa]pprove|[Pp]ay|[Pp]rocess|[Ii]gnore|[Ss]kip|must|should|[Mm]ark|[Aa]ccept|[Rr]elease)\b/,
     /\b(?:[Aa]pprove|[Ii]gnore|[Ss]kip|[Pp]ay)\b[^.]{0,60}\b(?:AI|LLM|GPT)s?\b/,
-    /\b(?:note|message|instructions?)\s+(?:to|for)\s+(?:the\s+)?(?:automated|AI|AP\s+(?:system|bot|software)|system|processor|reviewer|bot)/i,
+    /\b(?:note|message|instructions?)\s+(?:to|for)\s+(?:the\s+|any\s+|all\s+)?(?:automated|AI|AP\s+(?:system|bot|software)|systems?|processors?|reviewers?|bots?|assistants?)\b/i,
     /\bautomated\s+(?:\w+\s+)?(?:systems?|processors?|processing|reviews?|tools?|agents?)\b/i,
+    // Spanish / German: approve immediately, skip / without verification.
+    /\b(?:aprobar|apruebe|aprueben)\s+(?:de\s+inmediato|inmediatamente|ya|sin)\b|\b(?:sin|no)\s+(?:verificar|verificaci[oó]n|comprobar|revisar)\b|\bomitir\s+(?:la\s+)?verificaci[oó]n\b/i,
+    /\bsofort\s+(?:genehmigen|freigeben)\b|\bohne\s+(?:weitere\s+)?(?:Prüfung|Überprüfung|Verifizierung|Kontrolle)\b|\b(?:Prüfung|Überprüfung|Verifizierung)\s+überspringen\b|\bnicht\s+(?:prüfen|überprüfen|verifizieren)\b/i,
   ],
-  urgency: /\b(?:urgent(?:ly)?|immediately|asap|right away|within (?:24|48) hours|same[- ]day|final warning)\b/i,
-  payment: /\b(?:pay|payment|wire|transfer|remit)\w*/i,
+  tells: [
+    /\b(?:po_number|bank_details|is_invoice|invoice_number|document_type|line_items|tax_inclusive|source_quality|routing_code|account_number|vendor_name)\b/i,
+    /["']?\b(?:notices|confidence)\b["']?\s*[:=]\s*["'[{\d]/i,
+  ],
+  // Chat-role prefix ("SYSTEM:", "[assistant]:"); everywhere except line descriptions ("System: 4-axis CNC" is a product).
+  role: /(?:^|\n)\s*[[<]?(?:system|assistant)\s*[\]>]?\s*:/i,
+  urgency: /\b(?:urgent(?:ly)?|asap|within\s+(?:24|48|72)\s+hours|final\s+(?:warning|notice)|today\s+only)\b/i,
+  payment: /\b(?:pay|payment|wire|transfer|remit(?:tance)?)\b/i,
 };
-const steeringTexts = (ex) => [...(ex?.notices ?? []), ...(ex?.line_items ?? []).map((l) => l.description), ex?.payment_terms].filter((t) => typeof t === 'string' && t);
+/** NFKC, zero-width and soft-hyphen characters removed, spaced-out letters ("a p p r o v e") collapsed. */
+const normText = (t) => String(t).normalize('NFKC').replace(/[​-‏⁠-⁤﻿­]/g, '')
+  .replace(/\b(?:\p{L}[ .]){3,}\p{L}\b/gu, (m) => m.replace(/[ .]/g, ''));
+const strings = (o) => (typeof o === 'string' ? [o] : o && typeof o === 'object' ? Object.values(o).flatMap(strings) : []);
+const freeTexts = (ex) => [...(ex?.notices ?? []), ex?.payment_terms].filter((t) => typeof t === 'string' && t);
+const steerHit = (t) => STEERING.patterns.some((re) => re.test(t)) || (STEERING.urgency.test(t) && STEERING.payment.test(t));
+/** Texts on the document that try to steer its processing (original wording, for display). */
 export function findSteering(ex) {
-  return steeringTexts(ex).filter((t) => STEERING.patterns.some((re) => re.test(t)) || (STEERING.urgency.test(t) && STEERING.payment.test(t)));
+  const free = new Set(freeTexts(ex));
+  const descs = new Set((ex?.line_items ?? []).map((l) => l?.description));
+  return [...new Set(strings(ex ?? {}))].filter((t) => {
+    const n = normText(t);
+    return STEERING.tells.some((re) => re.test(n)) || (!descs.has(t) && STEERING.role.test(n)) || (free.has(t) && steerHit(n));
+  });
 }
 function checkSteering(s, ex) {
   const hits = findSteering(ex);
   if (!hits.length) { s.check('Instructions aimed at processors', 'pass', 'None found'); return; }
   s.check('Instructions aimed at processors', 'fail', hits.join(' | '));
   // Quote the trigger phrases, not the whole text (the full text is in the check above).
-  const phrases = [...new Set(hits.flatMap((t) => [...STEERING.patterns, STEERING.urgency].map((re) => re.exec(t)?.[0]).filter(Boolean)))].slice(0, 2);
+  const phrases = [...new Set(hits.map(normText).flatMap((t) => [...STEERING.patterns, ...STEERING.tells, STEERING.role, STEERING.urgency].map((re) => re.exec(t)?.[0]).filter(Boolean)))].slice(0, 2);
   s.reason('SUSPICIOUS_INSTRUCTIONS', 'hold', `The document carries instructions aimed at whoever processes it (${phrases.map((p) => `"${p.trim()}"`).join(', ')}); we never follow those, and genuine vendors don't send them, so the vendor must confirm the invoice before anything is paid.`);
 }
 const EMAIL_RE = /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi;
@@ -347,16 +413,22 @@ const EMAIL_RE = /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi;
 export function matchVendor(ex, vendors = []) {
   const s = stage();
   const name = ex?.vendor?.name ?? null;
-  const tid = alnum(ex?.vendor?.tax_id);
+  const tid = alnum(cleanTaxId(ex?.vendor?.tax_id));
   let vendor = null, method = null, score = 0;
 
   if (tid) {
-    vendor = vendors.find((v) => alnum(v.tax_id) === tid) ?? null;
+    vendor = vendors.find((v) => alnum(cleanTaxId(v.tax_id)) === tid) ?? null;
     if (vendor) {
       method = 'tax_id'; score = 1;
       s.check('Tax ID on file', 'pass', `${ex.vendor.tax_id} → ${vendor.vendor_id} ${vendor.name}`);
-      if (name && nameScore(name, vendor) < NAME_MATCH_MIN)
-        s.check('Name matches master', 'warn', `Invoice says "${name}", master says "${vendor.name}" (trading name?)`);
+      if (name && nameScore(name, vendor) < NAME_MATCH_MIN) {
+        // The name is another vendor's (e.g. a blocked one) while the tax ID is this one's: identity conflict, never approve.
+        const other = vendors.filter((v) => v !== vendor).map((v) => ({ v, sc: nameScore(name, v) })).sort((a, b) => b.sc - a.sc)[0];
+        if (other && other.sc >= NAME_MATCH_MIN) {
+          s.check('Name matches master', 'fail', `Invoice says "${name}", which is ${other.v.vendor_id} ${other.v.name}${other.v.status === 'blocked' ? ' (blocked)' : ''}, but the tax ID is ${vendor.vendor_id} ${vendor.name}'s`);
+          s.reason('VENDOR_UNKNOWN', 'hold', `The invoice is in the name of ${other.v.name}${other.v.status === 'blocked' ? ', a blocked vendor,' : ''} but carries ${vendor.name}'s tax ID (${vendor.tax_id}), so we can't be sure who sent it.`);
+        } else s.check('Name matches master', 'warn', `Invoice says "${name}", master says "${vendor.name}" (trading name?)`);
+      }
     } else s.check('Tax ID on file', 'warn', `${ex.vendor.tax_id} is not in the vendor master`);
   }
   if (!vendor && name) {
@@ -367,7 +439,7 @@ export function matchVendor(ex, vendors = []) {
       s.check('Name match', 'pass', `"${name}" → ${vendor.vendor_id} ${vendor.name} (similarity ${Math.round(best.sc * 100)}%)`);
       if (second && second.sc >= NAME_MATCH_MIN && best.sc - second.sc < 0.1)
         s.check('Name is unambiguous', 'warn', `Also resembles ${second.v.vendor_id} ${second.v.name}`);
-      if (tid && alnum(vendor.tax_id) && alnum(vendor.tax_id) !== tid)
+      if (tid && alnum(cleanTaxId(vendor.tax_id)) && alnum(cleanTaxId(vendor.tax_id)) !== tid)
         s.reason('VENDOR_UNKNOWN', 'hold', `The name matches ${vendor.name}, but the tax ID on the invoice (${ex.vendor.tax_id}) is not the one on file (${vendor.tax_id}), so we can't be sure who sent it.`);
     } else score = best ? r2(best.sc) : 0;
   }
@@ -387,7 +459,7 @@ export function matchVendor(ex, vendors = []) {
 
   // Bank details: any difference from the master is a payment-redirection risk until verified by call-back.
   const bd = ex.bank_details ?? {};
-  const mAcct = digitsOnly(vendor.bank_account), mRout = alnum(vendor.bank_routing);
+  const mAcct = digitsOnly(vendor.bank_account), mRout = cleanRouting(vendor.bank_routing);
   const diffs = [];
   const invAcctRaw = String(bd.account_number ?? '');
   const invAcct = digitsOnly(invAcctRaw);
@@ -397,7 +469,7 @@ export function matchVendor(ex, vendors = []) {
     s.check('Bank account matches master', same ? 'pass' : 'fail', `Invoice …${last4(invAcct)}, master ${mAcct ? `…${last4(mAcct)}` : 'none on file'}`);
     if (!same) diffs.push('account');
   }
-  const invRout = alnum(bd.routing_code);
+  const invRout = cleanRouting(bd.routing_code);
   if (invRout) {
     const same = invRout === mRout;
     s.check('Routing code matches master', same ? 'pass' : 'fail', `Invoice ${bd.routing_code}, master ${vendor.bank_routing || 'none on file'}`);
@@ -409,14 +481,27 @@ export function matchVendor(ex, vendors = []) {
     if (!same) diffs.push('iban');
   }
   if (!invAcct && !invRout && !bd.iban) s.check('Bank details', 'info', 'No bank details printed; we pay the account on file');
-  const bankNotice = (ex.notices ?? []).find((n) => /bank|account|remit|payment details/i.test(n) && /chang|new|updat|moved|switch/i.test(n));
+  // A notice announcing a change; "have NOT changed", "unchanged", "will never change" are fraud-awareness footers, not changes.
+  const NEGATED = /\b(?:not|never|no\s+longer|n't)\b[^.]{0,30}\b(?:chang|updat|mov|switch)|\bunchanged\b|\bremain(?:s|ing)?\s+(?:the\s+)?same\b|\bsame\s+as\s+(?:before|always)\b/i;
+  const bankNotice = (ex.notices ?? []).find((n) => /bank|account|remit|payment details/i.test(n) && /chang|new|updat|moved|switch/i.test(n) && !NEGATED.test(n));
   if (bankNotice) s.check('Bank change notice', 'fail', bankNotice);
 
   // Contact/remit email domains on the invoice (vendor block and notices) vs the master's remit email.
+  // A free-mail master address (gmail…) proves nothing by domain, so there the whole address has to match.
   const invDom = domainOf(ex.vendor?.email), mDom = domainOf(vendor.remit_email);
-  const invDoms = [...new Set([invDom, ...(ex.notices ?? []).flatMap((n) => n.match(EMAIL_RE) ?? []).map(domainOf)].filter(Boolean))];
+  const addr = (e) => String(e ?? '').trim().toLowerCase();
+  const invAddrs = [...new Set([ex.vendor?.email, ...(ex.notices ?? []).flatMap((n) => n.match(EMAIL_RE) ?? [])].map(addr).filter((e) => domainOf(e)))];
   let domainNote = '', lookalikeDom = null;
-  for (const d of mDom ? invDoms : []) {
+  for (const e of mDom ? invAddrs : []) {
+    const d = domainOf(e);
+    if (FREEMAIL.has(mDom) && d === mDom) {
+      if (e === addr(vendor.remit_email)) s.check('Contact email domain', 'pass', e);
+      else {
+        s.check('Contact email domain', 'warn', `${e} is not ${vendor.remit_email} on file (${mDom} is a free-mail domain, so the whole address must match)`);
+        domainNote ||= `, and the invoice's contact email (${e}) is not the one on file (${vendor.remit_email})`;
+      }
+      continue;
+    }
     if (d === mDom || d.endsWith('.' + mDom)) { s.check('Contact email domain', 'pass', d); continue; }
     if (isLookalikeDomain(d, mDom)) {
       lookalikeDom ??= d;
@@ -430,13 +515,19 @@ export function matchVendor(ex, vendors = []) {
     s.check('Phone matches master', 'warn', `Invoice ${ex.vendor.phone}, master ${vendor.phone}: call back on the master number only`);
 
   if (diffs.length || bankNotice) {
-    const onFile = mAcct ? `${vendor.bank_name} account ending ${last4(mAcct)}` : 'no bank account';
-    const asked = invAcct || invRout || bd.iban
+    const routingDiff = diffs.includes('routing');
+    const onFile = mAcct ? `${vendor.bank_name} account ending ${last4(mAcct)}${routingDiff && vendor.bank_routing ? ` (routing ${vendor.bank_routing})` : ''}` : 'no bank account';
+    const asked = diffs.length
       ? `${bd.bank_name || 'a different bank'}${invAcct ? ` account ending ${last4(invAcct)}` : ''}${invRout ? ` (routing ${bd.routing_code})` : ''}${bd.iban && !invAcct ? ` IBAN ${bd.iban}` : ''}`
       : null;
     const msg = asked
-      ? `The invoice asks us to pay ${asked}, but our vendor master has ${onFile} for ${vendor.name}${domainNote}.`
-      : `The invoice says "${bankNotice}" without details we can compare to ${onFile} on file${domainNote}.`;
+      ? (diffs.length === 1 && routingDiff && invAcct
+        ? `The invoice shows routing ${bd.routing_code} for account ending ${last4(invAcct)}, but our vendor master has routing ${vendor.bank_routing || 'none'} for ${vendor.name}${domainNote}.`
+        : `The invoice asks us to pay ${asked}, but our vendor master has ${onFile} for ${vendor.name}${domainNote}.`)
+      : invAcct || invRout
+        // Notice says "changed" but the printed details are the ones on file: say so, never compare an account with itself.
+        ? `The invoice says "${bankNotice}", but the bank details it prints match ${onFile} on file, so it is unclear what changed${domainNote}.`
+        : `The invoice says "${bankNotice}" without details we can compare to ${onFile} on file${domainNote}.`;
     s.reason('BANK_DETAILS_CHANGED', 'hold', msg);
   }
   if (lookalikeDom) s.reason('REMIT_DOMAIN_LOOKALIKE', 'hold', `The invoice's contact email domain ${lookalikeDom} looks like ${vendor.name}'s real one (${mDom}) but is not the same; lookalike domains are a common way to redirect payments.`);
@@ -462,24 +553,44 @@ function poContext(po, { poLines = [], receipts = [], ledger = [] }) {
   };
 }
 
+/**
+ * How well an invoice line describes a PO line, 0..1. Jaccard counts as is; a looser overlap (a short PO text
+ * contained in a wordier line) only counts when the line is also priced like the PO line (within 20%), so
+ * "Fuel surcharge - LTL freight" or "Volume discount - office chairs" don't borrow a PO line's words.
+ * Negative lines (discounts, credits) never describe a PO line.
+ */
+function lineSim(l, p) {
+  if (num(l.amount) !== null && num(l.amount) < 0) return 0;
+  const code = alnum(l.item_code);
+  if (code && alnum(p.item_code) === code) return 1;
+  const j = tokenSim(l.description, p.description);
+  const q = num(l.quantity), a = num(l.amount), u = num(l.unit_price) ?? (a !== null && q ? a / q : null), pu = num(p.unit_price);
+  const near = (x, y) => x !== null && y > 0 && Math.abs(x - y) / y <= 0.2;
+  // Only the amount was read: compare it with one unit or with the whole PO line.
+  const pricedLike = u !== null ? near(u, pu) : near(a, pu) || near(a, pu * (num(p.qty) ?? 1));
+  return Math.max(j, pricedLike ? overlap(l.description, p.description) : 0);
+}
+
 function bestPoLine(line, poLs) {
+  if (num(line.amount) !== null && num(line.amount) < 0) return { pl: null, sim: 0, how: null };
   const code = alnum(line.item_code);
   const byCode = code && poLs.find((p) => alnum(p.item_code) === code);
   if (byCode) return { pl: byCode, sim: 1, how: 'item code' };
   let best = null, sim = 0;
-  for (const p of poLs) { const s = Math.max(tokenSim(line.description, p.description), overlap(line.description, p.description)); if (s > sim) { sim = s; best = p; } }
+  for (const p of poLs) { const s = lineSim(line, p); if (s > sim) { sim = s; best = p; } }
   return sim >= LINE_MATCH_MIN ? { pl: best, sim, how: 'description' } : { pl: null, sim, how: null };
 }
 
-/** Score = ½ description fit (mean best line similarity) + ½ amount fit (invoice net vs value left on the PO). */
+/**
+ * Score = ½ description fit (mean best line similarity) + ½ amount fit. A partial invoice that fits inside the
+ * value left on the PO scores 0.9-1 (exactly the rest scores 1); one that exceeds it falls off with the gap.
+ */
 function scorePO(ex, net, lines, remaining) {
-  const invLines = ex.line_items ?? [];
-  const desc = invLines.length ? sum(invLines.map((l) => {
-    const code = alnum(l.item_code);
-    if (code && lines.some((p) => alnum(p.item_code) === code)) return 1;
-    return Math.max(0, ...lines.map((p) => Math.max(tokenSim(l.description, p.description), overlap(l.description, p.description))));
-  })) / invLines.length : 0;
-  const amount = remaining > 0 && net > 0 ? Math.max(0, 1 - Math.abs(net - remaining) / Math.max(net, remaining)) : 0;
+  const invLines = (ex.line_items ?? []).filter((l) => !(num(l.amount) < 0));
+  const desc = invLines.length ? sum(invLines.map((l) => Math.max(0, ...lines.map((p) => lineSim(l, p))))) / invLines.length : 0;
+  const amount = !(remaining > 0 && net > 0) ? 0
+    : net <= remaining + EPS ? 0.9 + 0.1 * (net / remaining)
+      : Math.max(0, 1 - (net - remaining) / net);
   return { score: 0.5 * desc + 0.5 * amount, desc, amount };
 }
 
@@ -503,7 +614,7 @@ export function matchPO(ex, vendor, ctx = {}) {
 
   let po = null, inferred = false, score = null, candidates = [];
   if (ex.po_number) {
-    po = pos.find((p) => normalizePO(p.po_number) === normalizePO(ex.po_number)) ?? null;
+    po = resolvePO(ex.po_number, pos);
     if (!po) {
       const ranked = rankOpen();
       candidates = asCandidates(ranked);
@@ -513,15 +624,17 @@ export function matchPO(ex, vendor, ctx = {}) {
       s.reason('PO_NOT_FOUND', 'hold', `The invoice quotes ${ex.po_number}, which is not one of our purchase orders${hint}.`);
       return done({ candidates });
     }
-    s.check('PO exists', 'pass', `${po.po_number} (${po.category}, ${money(num(po.net_total), po.currency)}, requester ${po.requester})`);
-    if (vendor && po.vendor_id !== vendor.vendor_id) {
+    s.check('PO exists', 'pass', `${po.po_number}${normalizePO(po.po_number) !== normalizePO(ex.po_number) ? ` (quoted as "${ex.po_number}")` : ''} (${po.category}, ${money(num(po.net_total), po.currency)}, requester ${po.requester})`);
+    if (po.vendor_id !== vendor?.vendor_id) {
+      // An unknown sender quoting someone else's PO: stop here, so nothing about that PO's receipts reaches the sender.
       const other = vName(po.vendor_id);
-      s.check('PO vendor matches', 'fail', `PO is for ${po.vendor_id}${other ? ` ${other}` : ''}, invoice is from ${vendor.vendor_id}`);
-      s.reason('PO_VENDOR_MISMATCH', 'hold', `${po.po_number} was issued to ${other ?? `vendor ${po.vendor_id}`}, not ${vendor.name}, so it can't be used for this invoice.`);
+      s.check('PO vendor matches', 'fail', `PO is for ${po.vendor_id}${other ? ` ${other}` : ''}, invoice is from ${vendor ? vendor.vendor_id : 'an unmatched sender'}`);
+      s.reason('PO_VENDOR_MISMATCH', 'hold', vendor
+        ? `${po.po_number} was issued to ${other ?? `vendor ${po.vendor_id}`}, not ${vendor.name}, so it can't be used for this invoice.`
+        : `${po.po_number} was issued to ${other ?? `vendor ${po.vendor_id}`}, and the sender ${ex.vendor?.name ? `"${ex.vendor.name}" ` : ''}is not that vendor as far as our vendor master shows, so the PO can't be used for this invoice.`);
       return done({ po });
     }
-    if (vendor) s.check('PO vendor matches', 'pass', vendor.vendor_id);
-    else s.check('PO vendor', 'info', `PO belongs to ${po.vendor_id}${vName(po.vendor_id) ? ` ${vName(po.vendor_id)}` : ''}; the sender is not matched`);
+    s.check('PO vendor matches', 'pass', vendor.vendor_id);
     if (po.status !== 'open') {
       s.check('PO is open', 'fail', po.status);
       s.reason('PO_CLOSED', 'hold', `${po.po_number} is ${po.status}, so no more invoices should be booked against it.`);
@@ -533,8 +646,12 @@ export function matchPO(ex, vendor, ctx = {}) {
     const [a, b] = ranked;
     const close = a && b && a.score - b.score < TOL.poAmbiguityMargin && b.score >= TOL.poInferMin - TOL.poAmbiguityMargin;
     if (!a) {
-      s.check('PO inference', 'fail', `No open POs with value left for ${vendor.vendor_id}`);
-      s.reason('PO_NOT_FOUND', 'hold', `There is no PO number on the invoice and ${vendor.name} has no open PO with value left to bill.`);
+      const otherCur = [...new Set(pos.filter((p) => p.vendor_id === vendor.vendor_id && p.status === 'open' && cur && p.currency && p.currency !== cur
+        && poContext(p, ctx).remaining > 0).map((p) => p.currency))];
+      s.check('PO inference', 'fail', `No open POs with value left for ${vendor.vendor_id}${otherCur.length ? ` in ${cur}` : ''}`);
+      s.reason('PO_NOT_FOUND', 'hold', otherCur.length
+        ? `There is no PO number on the invoice, and ${vendor.name}'s open POs are in ${humanList(otherCur)}, not ${cur}, so none of them can be matched to it.`
+        : `There is no PO number on the invoice and ${vendor.name} has no open PO with value left to bill.`);
       return done({ candidates });
     }
     if (close) {
@@ -569,11 +686,13 @@ export function matchPO(ex, vendor, ctx = {}) {
   let expected = 0, priceHolds = 0, priceExtra = 0, priceWithin = null;
   for (const l of ex.line_items ?? []) {
     let q = num(l.quantity), u = num(l.unit_price), a = num(l.amount);
+    const { pl, how } = bestPoLine(l, c.lines);
+    // Only the amount was read: assume the PO price and derive the quantity, so the amount is what gets checked.
+    if (q === null && u === null && a !== null && pl && num(pl.unit_price) > 0) { u = num(pl.unit_price) / factor; q = Math.round((a / u) * 1e4) / 1e4; }
     if (q === null) q = u && a !== null ? Math.round((a / u) * 1e4) / 1e4 : 1; // shortcut: no qty → derive from amount/unit, else qty 1 at the amount
     if (u === null) u = a !== null ? a / (q || 1) : null;
     if (a === null) a = u !== null ? q * u : 0;
     const netUnit = u !== null ? u * factor : null, netAmt = a * factor;
-    const { pl, how } = bestPoLine(l, c.lines);
     const lm = { description: l.description, poLineNo: pl?.line_no ?? null, qty: q, unitPrice: netUnit !== null ? r2(netUnit) : null, poUnitPrice: pl ? num(pl.unit_price) : null,
       variancePct: null, ordered: pl ? num(pl.qty) : null, received: null, previouslyInvoicedQty: pl ? c.prevQty(pl.line_no) : null, amount: r2(netAmt) };
     ledgerLines.push({ po_line_no: lm.poLineNo, qty: q, net: r2(netAmt) });
@@ -638,7 +757,8 @@ export function matchPO(ex, vendor, ctx = {}) {
       `Net ${pm(net)} vs ${pm(expected)} expected (${extra >= 0 ? '+' : ''}${pm(extra)})${aOk && extra > EPS ? ', within tolerance' : byPrice ? ', all from the price difference' : ''}`);
     if (!aOk) {
       overrun = true;
-      if (!byPrice) s.reason('PO_OVERRUN', 'hold', `This invoice comes to ${pm(net)} before tax, ${pm(extra)}${Number.isFinite(extraPct) ? ` (${pct1(extraPct)})` : ''} more than the PO prices for what it bills (${pm(expected)})${unmatchedTxt}; ${tolTxt}.`);
+      if (!byPrice && expected <= EPS) s.reason('PO_OVERRUN', 'hold', `None of this invoice's lines${unmatched.length ? ` (${humanList(unmatched.map((l) => l.description))})` : ''} matches a line on ${po.po_number}, so its ${pm(net)} before tax can't be checked against PO prices.`);
+      else if (!byPrice) s.reason('PO_OVERRUN', 'hold', `This invoice comes to ${pm(net)} before tax, ${pm(extra)}${Number.isFinite(extraPct) ? ` (${pct1(extraPct)})` : ''} more than the PO prices for what it bills (${pm(expected)})${unmatchedTxt}; ${tolTxt}.`);
     } else if (extra > EPS) within = `Billed ${pm(net)} before tax against ${pm(expected)} at PO prices, ${pm(extra)} (${pct1(extraPct)}) more${unmatchedTxt}; that is within our ${TOL.headerPct}% / ${pm(cap)} tolerance.`;
 
     const total = num(po.net_total), cum = c.prevNet + net, over = cum - total;
@@ -690,7 +810,8 @@ export function checkDuplicates(ex, vendor, ledger = [], { fileSha, priorFileSha
   const norm = normalizeInvoiceNumber(ex.invoice_number);
   const total = num(ex.total);
   const sameTotal = (r) => total !== null && num(r.total) !== null && Math.abs(num(r.total) - total) <= 0.01 && (!r.currency || !ex.currency || r.currency === ex.currency);
-  const rowNorm = (r) => r.invoice_number_norm ?? normalizeInvoiceNumber(r.invoice_number);
+  // Recomputed from the raw number when we have it, so rows stored under an older normalisation still compare.
+  const rowNorm = (r) => normalizeInvoiceNumber(r.invoice_number) ?? r.invoice_number_norm ?? null;
 
   let numberHit = false;
   if (!norm) s.check('Invoice number duplicate check', 'warn', 'Skipped: the invoice has no number');
@@ -721,7 +842,7 @@ export function checkDuplicates(ex, vendor, ledger = [], { fileSha, priorFileSha
         original = near;
         const gap = Math.abs(daysBetween(near.invoice_date, ex.invoice_date));
         s.check('Same amount, nearby date', 'fail', `${near.invoice_number ?? '(no number)'} on ${near.invoice_date}, ${gap} days apart`);
-        s.reason('POSSIBLE_DUPLICATE', 'hold', `${vendor.name} already billed the same ${m(total)} on ${near.invoice_number ? `invoice ${near.invoice_number}` : 'an unnumbered invoice'} dated ${fmtDate(near.invoice_date)}, ${gap} days apart, under a different number; check it is not the same charge twice.`);
+        s.reason('POSSIBLE_DUPLICATE', 'hold', `${vendor.name} already billed the same ${m(total)} on ${near.invoice_number ? `invoice ${near.invoice_number}` : 'an unnumbered invoice'} dated ${fmtDate(near.invoice_date)}, ${gap ? `${gap} day${gap > 1 ? 's' : ''} apart` : 'the same date'}, under a different number; check it is not the same charge twice.`);
       } else s.check('Same amount, nearby date', 'pass', `No other ${m(total)} invoice within ${TOL.dupWindowDays} days`);
     }
   }
@@ -742,13 +863,18 @@ export function checkCreditNote(ex, vendor, ledger = []) {
   const text = JSON.stringify({ ...ex, invoice_number: null });
   const toks = new Set((text.match(/[A-Za-z0-9][A-Za-z0-9\-/_.]{2,}[A-Za-z0-9]/g) ?? []).map(normalizeInvoiceNumber));
   const ref = vendor ? ledger.find((r) => r.vendor_id === vendor.vendor_id && ['approved', 'on_hold'].includes(r.status)
-    && (r.invoice_number_norm ?? normalizeInvoiceNumber(r.invoice_number))?.length >= 4
-    && (r.invoice_number_norm ?? normalizeInvoiceNumber(r.invoice_number)) !== own
-    && toks.has(r.invoice_number_norm ?? normalizeInvoiceNumber(r.invoice_number))) ?? null : null;
+    && (normalizeInvoiceNumber(r.invoice_number) ?? r.invoice_number_norm)?.length >= 4
+    && (normalizeInvoiceNumber(r.invoice_number) ?? r.invoice_number_norm) !== own
+    && toks.has(normalizeInvoiceNumber(r.invoice_number) ?? r.invoice_number_norm)) ?? null : null;
   const who = vendor?.name ?? ex.vendor?.name ?? 'an unknown vendor';
   s.check('Credit note', 'warn', `${amt}${ref ? ` against invoice ${ref.invoice_number}` : ''}`);
   s.check('PO quantity checks', 'info', 'Skipped: a credit note does not bill goods or services');
   if (ref) s.check('Referenced invoice', 'info', `${ref.invoice_number} (run ${ref.run_id}, ${ref.status === 'approved' ? 'approved' : 'on hold'})`);
   s.reason('CREDIT_NOTE', 'hold', `Credit note${ex.invoice_number ? ` ${ex.invoice_number}` : ''} for ${amt} from ${who}${ref ? `, against invoice ${ref.invoice_number} (run ${ref.run_id})` : ''}. Nothing to pay; apply it against the vendor's next payment.`);
-  return { checks: s.checks, reasons: s.reasons, data: { referencedInvoice: ref?.invoice_number ?? null, referencedRunId: ref?.run_id ?? null }, original: ref };
+  // Ledger values for a credit are negative whatever sign the document printed.
+  const t = invoiceTotals(absAmounts(ex));
+  return {
+    checks: s.checks, reasons: s.reasons, data: { referencedInvoice: ref?.invoice_number ?? null, referencedRunId: ref?.run_id ?? null }, original: ref,
+    net: t.net === null ? null : -Math.abs(t.net), total: t.total === null ? null : -Math.abs(t.total),
+  };
 }

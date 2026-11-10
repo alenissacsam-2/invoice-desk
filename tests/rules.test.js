@@ -327,9 +327,13 @@ test('duplicates: same number + amount rejects, same number + different amount h
   assert.equal(corrected.result.decision, 'REVIEW');
   assert.equal(corrected.result.route, 'AP clerk');
 
-  const nearby = run(atPrice(100, { invoice_number: 'T-77', invoice_date: '2026-11-09' }), ledger, { m });
+  const nearby = run(atPrice(100, { invoice_number: 'T-77', invoice_date: '2026-11-06' }), ledger, { m });
   assert.ok(nearby.codes.includes('POSSIBLE_DUPLICATE'));
-  assert.match(nearby.result.reasons.find((x) => x.code === 'POSSIBLE_DUPLICATE').message, /8 days apart/);
+  assert.match(nearby.result.reasons.find((x) => x.code === 'POSSIBLE_DUPLICATE').message, /5 days apart/);
+  assert.equal(nearby.result.primaryReason.code, 'POSSIBLE_DUPLICATE', 'ahead of the PO consumption it causes');
+  assert.equal(nearby.result.route, 'AP clerk');
+  // Outside the 7-day window (a monthly retainer, say) the same amount is not a possible duplicate.
+  assert.ok(!run(atPrice(100, { invoice_number: 'T-78', invoice_date: '2026-11-09' }), ledger, { m }).codes.includes('POSSIBLE_DUPLICATE'));
 
   // Rejected rows never count; on_hold rows do.
   assert.ok(!run(atPrice(100, { invoice_number: 'T-42' }), [{ ...ledger[0], status: 'rejected' }], { m }).codes.includes('DUPLICATE_INVOICE'));

@@ -26,7 +26,7 @@ export const TOL = {
   poAmbiguityMargin: 0.1,
   lowConfidence: 0.7,
   maxAgeDays: 365,
-  dupWindowDays: 30,
+  dupWindowDays: 7,     // same vendor + same total + different number within this many days → possible duplicate (monthly retainers are ~30 apart)
 };
 
 export const GEMINI = {
