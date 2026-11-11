@@ -333,7 +333,7 @@ main:focus-visible, .data-section:focus-visible { outline: none; }
 .paper[aria-disabled="true"] { cursor: progress; }
 .paper[aria-disabled="true"]:not([aria-current="true"]):hover { transform: none; box-shadow: var(--shadow-slip); }
 .paper-no { font: 800 21px/1 var(--display); color: var(--form); padding-top: 1px; }
-.paper-body { display: grid; gap: 3px; min-width: 0; }
+.paper-body { display: grid; grid-template-columns: minmax(0, 1fr); gap: 3px; min-width: 0; }
 .paper-vendor { font-weight: 700; font-size: 13.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .paper-scn { font-size: 12.5px; color: var(--ink-2); line-height: 1.4; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
 .paper-tabs { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
@@ -784,6 +784,8 @@ main:focus-visible, .data-section:focus-visible { outline: none; }
 .paper-foot { flex-wrap: nowrap; gap: 8px; min-height: 24px; }
 .paper-foot .paper-tabs { flex: 1 1 0; min-width: 0; height: 20px; margin-top: 0; overflow: hidden; }
 .paper-foot > :not(.paper-tabs) { flex: none; margin-left: auto; }
+/* a tag wider than its room (a tray with a scrollbar) ends in an ellipsis rather than a hard cut */
+.paper-foot .ftab { min-width: 0; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* landing: the prompt and a one-click start, straight under the lede */
 .landing-cta { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 16px; margin-top: 14px; }
