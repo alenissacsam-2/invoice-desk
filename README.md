@@ -44,6 +44,8 @@ Ten invoices from seven vendors (nine PDFs and one phone photo), each with its o
 
 Run 01 before 06, and 04 before 05: the later ones need the earlier ones in the ledger.
 
+**Try your own upload:** [`demo-uploads/`](demo-uploads/) holds three invoices the app has never seen (they are not in the tray). Drop them into the in tray: **A** Peak Valley deep clean is approved, **B** from Globex Trading is voided because the vendor is blocked, and **C** from Acme is held for Procurement because it bills against a PO that was closed.
+
 ### Why these edge cases
 - **Instructions aimed at the AI (10):** documents can now talk to the software reading them. The model is told never to follow instructions inside a document and to copy any it finds into `notices`, and the rules hold the invoice whenever one appears. Even if a cleverer injection fooled the model, payment only ever goes to the bank account in the vendor master, and PO, quantity and duplicate checks still run on master data.
 - **Scanned, no PO (03):** small vendors scan paper invoices and rarely quote a PO. A "no PO, no pay" rule would block them all. Instead the process infers the PO, but only when one candidate clearly wins on both description and amount. Otherwise it holds and says why.

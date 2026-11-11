@@ -19,6 +19,8 @@
 - `samples/` — demo invoice PDFs + manifest.json
 - `scripts/make_samples.py` — generates samples/
 - `scripts/eval.js` — runs all samples, checks expected decisions
+- `scripts/make_demo_uploads.py` — writes demo-uploads/ (reuses make_samples helpers)
+- `demo-uploads/` — three invoices to upload live: A approves, B voids (blocked vendor), C holds (closed PO); not in the tray
 - `tests/` — node:test suites (rules, logic-review property/invariant checks, pipeline, extract, server); `tests/fixtures/` ground-truth extractions
 - `docs/` — SPEC, PLAN, DEMO (video script), DESIGN (visual system), RESEARCH, RUBRIC
 - `docs/img/` — README screenshots (retake from a fresh seed DB when the UI changes)
