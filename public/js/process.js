@@ -832,8 +832,11 @@ function inkStamp(o, date, cls = '') {
 }
 
 // Where the slip goes, for the stamp's sub-line; a reviewer's own decision keeps "By reviewer".
-const STAMP_DEST = { APPROVE: 'To AP file', REJECT: 'Back to vendor' };
-const stampDest = (o, res) => o.sub || STAMP_DEST[o.decision] || (res?.route ? `To ${res.route}` : 'For review');
+// Only a duplicate goes back to the vendor; a blocked vendor or a non-invoice goes to the team named in the route.
+const isResend = (res) => res?.reasons?.some((r) => r.code === 'DUPLICATE_INVOICE');
+const stampDest = (o, res) => o.sub || (o.decision === 'APPROVE' ? 'To AP file'
+  : o.decision === 'REJECT' && (isResend(res) || !res?.route) ? 'Back to vendor'
+  : res?.route ? `To ${res.route}` : 'For review');
 
 const copiesFooter = (active) => html`<span class="fl">Copies</span>${COPIES.map(([k, name, desk]) => html`<span class="copy ${k === active ? 'on' : ''}"><i class="cs cs-${k}" aria-hidden="true"></i>${name} — ${desk}${k === active ? html`<span class="sr-only"> (this copy)</span>` : ''}</span>`)}`;
 
@@ -957,8 +960,11 @@ const lcFirst = (t) => (/^[A-Z]{2}/.test(t) ? t : t.charAt(0).toLowerCase() + t.
 function spellMore(headline, primary, reasons) {
   const m = /\s*\(\+(\d+) more\)/.exec(headline);
   if (!m || !primary) return headline;
-  const rest = reasons.filter((x) => x.severity === primary.severity && x.code !== primary.code).map((x) => lcFirst(reasonLabel(x)));
-  if (rest.length !== +m[1]) return headline;
+  const same = reasons.filter((x) => x.severity === primary.severity);
+  if (same.length - 1 !== +m[1]) return headline;
+  // one reason per PO line repeats a code; name each kind once, and drop the suffix when every extra is the primary's kind
+  const rest = [...new Set(same.filter((x) => x.code !== primary.code).map((x) => lcFirst(reasonLabel(x))))];
+  if (!rest.length) return headline.slice(0, m.index) + headline.slice(m.index + m[0].length);
   const words = rest.length > 1 ? `, ${rest.slice(0, -1).join(', ')} and ${rest.at(-1)}` : ` and ${rest[0]}`;
   return headline.slice(0, m.index) + words + headline.slice(m.index + m[0].length);
 }

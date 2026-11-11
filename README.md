@@ -14,6 +14,8 @@ Built for the Zamp AI Solutions Analyst case study (PS-1, Finance / AP).
 
 ## How it works
 
+The full process map (every stage, decision point and output, which stage catches each demo case, and why each tool is there) is in [`docs/PROCESS.md`](docs/PROCESS.md).
+
 ```
  invoice.pdf ─▶ 1 Intake ─▶ 2 Read ─▶ 3 Validate ─▶ 4 Vendor ─▶ 5 Duplicate ─▶ 6 PO match ─▶ 7 Decision
                  type, hash   Gemini     totals, tax,  master file,  same vendor,   2-/3-way match,  approve / hold /
