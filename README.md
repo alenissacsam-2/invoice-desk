@@ -4,7 +4,7 @@ An invoice comes in as a PDF or image. Out comes a decision an AP manager can ac
 
 Built for the Zamp AI Solutions Analyst case study (PS-1, Finance / AP).
 
-**Live:** https://invoice-desk-6mrv.onrender.com (free tier: the first visit after 15 idle minutes takes about a minute to wake) · **Demo video:** _add link here_
+**Live:** https://invoice-desk-6mrv.onrender.com (free tier: the first visit after 15 idle minutes takes about a minute to wake) · 
 
 ![Invoice 07: matches its PO perfectly, but the bank details changed. Stamped ON HOLD and routed to Treasury & Security.](docs/img/slip-bank-change.png)
 
